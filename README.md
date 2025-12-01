@@ -28,6 +28,11 @@ Raspberry Pi Camera → Object Detection → Pose Estimation → TF Publisher �
 4. [Object 4 - Keypoint-based]
 5. [Object 5 - Keypoint-based]
 
+## Team Members
+- Myu Wai Shin
+- Arash Bazrafshan
+- Oluwatunmise Raphael Shuaibu
+
 ## Dependencies
 - ROS2 Jazzy
 - OpenCV 4.x with ArUco module
