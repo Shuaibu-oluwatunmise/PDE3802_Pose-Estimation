@@ -5,7 +5,7 @@ from pathlib import Path
 
 def main():
     # === CONFIGURATION ===
-    DATA_YAML = Path("place_holder")    # Path to your dataset YAML
+    DATA_YAML = Path("./DATA/data.yaml")   # Path to your dataset YAML
     MODEL_NAME = "yolov8n.pt"            # Model to train (Nano version)
     EPOCHS = 50                          # Total training epochs
     IMG_SIZE = 640                       # Image size for training

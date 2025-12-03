@@ -15,11 +15,6 @@ pose_est/
 *.jpg
 *.png
 
-# Models
-*.pt
-*.onnx
-runs/
-
 # IDE
 .vscode/
 .idea/
