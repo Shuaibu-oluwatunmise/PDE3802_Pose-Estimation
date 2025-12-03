@@ -10,7 +10,7 @@ git clone https://github.com/Shuaibu-oluwatunmise/PDE3802_Pose-Estimation.git
 
 ### 2. Run the setup script:
 ```bash
-cd ~/PDE3802_Pose-Estimation/setup
+cd ~/PDE3802_Pose-Estimation/Set_Up
 bash setup_workspace.sh
 ```
 
