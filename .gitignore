@@ -1,0 +1,25 @@
+# Camera calibration (device-specific)
+**/camera_calibration/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+pose_est/
+*.egg-info/
+
+# Data
+*.avi
+*.mp4
+*.jpg
+*.png
+
+# Models
+*.pt
+*.onnx
+runs/
+
+# IDE
+.vscode/
+.idea/
