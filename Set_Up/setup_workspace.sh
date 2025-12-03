@@ -97,7 +97,7 @@ echo "✓ Repository moved to: ~/$WORKSPACE_NAME/src/$REPO_NAME"
 # Update paths since we moved
 WORKSPACE_DIR=~/$WORKSPACE_NAME
 REPO_DIR=$WORKSPACE_DIR/src/$REPO_NAME
-SETUP_DIR=$REPO_DIR/setup
+SETUP_DIR=$REPO_DIR/Set_Up
 
 # =============================================================================
 # 4. Create Python Virtual Environment
