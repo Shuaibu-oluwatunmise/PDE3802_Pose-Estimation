@@ -12,8 +12,8 @@ pose_est/
 # Data
 *.avi
 *.mp4
-*.jpg
-*.png
+# *.jpg
+# *.png
 
 # IDE
 .vscode/
