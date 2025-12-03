@@ -33,6 +33,12 @@ img_size = None  # will be set from first frame
 # Create output directories
 os.makedirs('camera_calibration/images', exist_ok=True)
 
+init_path = 'camera_calibration/__init__.py'
+if not os.path.exists(init_path):
+    with open(init_path, 'w') as f:
+        pass  # Just create an empty file
+    print(f"✓ Created: {init_path}")
+
 # === Init GStreamer / libcamera pipeline ===
 Gst.init(None)
 
