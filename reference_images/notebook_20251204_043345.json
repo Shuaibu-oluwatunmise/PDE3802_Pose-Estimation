@@ -1,0 +1,15 @@
+{
+  "object_name": "notebook",
+  "dimensions_mm": {
+    "width": 210.0,
+    "height": 295.0
+  },
+  "timestamp": "20251204_043345",
+  "keypoint_count": 2000,
+  "quality": "EXCELLENT",
+  "image_shape": [
+    480,
+    640
+  ],
+  "image_file": "notebook_20251204_043345.jpg"
+}
