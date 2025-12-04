@@ -41,7 +41,7 @@ from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, D
 # 🤖 ROS2 Imports
 import rclpy
 from rclpy.node import Node
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 from geometry_msgs.msg import TransformStamped
 
 # ==============================================================================
@@ -213,6 +213,12 @@ class ReferencePoseEstimator(Node):  # 🤖 Inherit from ROS2 Node
         # 🤖 ROS2: Create TF broadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
         self.camera_frame = "camera_link"
+        
+        # 🤖 ROS2: Publish static camera_link frame relative to world/map
+        from tf2_ros import StaticTransformBroadcaster
+        self.static_tf_broadcaster = StaticTransformBroadcaster(self)
+        self._publish_static_camera_frame()
+        
         self.get_logger().info("✓ ROS2 TF broadcaster initialized")
         
         # 🟢 RPI CSI: Pipeline instead of VideoCapture
@@ -263,6 +269,26 @@ class ReferencePoseEstimator(Node):  # 🤖 Inherit from ROS2 Node
         # Build per-object state
         self.targets = {}
         self._initialize_targets()
+
+    def _publish_static_camera_frame(self):
+        """Publish static camera_link frame relative to map/world"""
+        t = TransformStamped()
+        
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "map"  # Root frame
+        t.child_frame_id = self.camera_frame
+        
+        # Camera at origin (identity transform)
+        t.transform.translation.x = 0.0
+        t.transform.translation.y = 0.0
+        t.transform.translation.z = 0.0
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = 0.0
+        t.transform.rotation.z = 0.0
+        t.transform.rotation.w = 1.0
+        
+        self.static_tf_broadcaster.sendTransform(t)
+        self.get_logger().info("✓ Published static camera_link frame")
 
     def _initialize_targets(self):
         """Initialize target states and load references"""
