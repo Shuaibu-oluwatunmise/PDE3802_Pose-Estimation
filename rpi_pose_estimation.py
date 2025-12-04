@@ -6,6 +6,10 @@ Complete Pose Estimation System with Reference Loading - RASPBERRY PI VERSION
 - Homography independent after initialization
 - Automatic recovery when tracking is lost
 - 🟢 RASPBERRY PI CSI CAMERA via GStreamer/libcamera
+- 🚀 PI PERFORMANCE OPTIMIZATIONS:
+  - Adaptive frame skipping (6x skip when tracking, 1x when searching)
+  - Lighter ORB (1500 features vs 2000)
+  - Lost detection safety (auto-recovery)
 """
 
 import os
@@ -219,9 +223,11 @@ class ReferencePoseEstimator:
             self.use_new_aruco_api = False
             print(f"✓ ArUco detector initialized (legacy API)")
 
-        # Frame skipping
+        # 🚀 PI OPTIMIZATION: Adaptive Frame Skipping
         self.frame_idx = 0
-        self.yolo_every_n = 2  # Run YOLO every 2 frames
+        self.yolo_every_n_tracking = 6   # Infrequent updates when tracking (FPS boost)
+        self.yolo_every_n_search = 1     # Frequent updates when searching
+        self.no_det_frames = 0           # Counter for lost detection safety
         
         self.last_bboxes = {name: None for name in OBJECT_CONFIGS}
         self.last_confidences = {name: 0.0 for name in OBJECT_CONFIGS}
@@ -231,10 +237,10 @@ class ReferencePoseEstimator:
         self.dist_coeffs = DIST_COEFFS
         print("✓ Loaded camera parameters from camera_params.py")
 
-        # ORB for homography objects
+        
         self.orb = cv2.ORB_create(nfeatures=2000, fastThreshold=12)
         self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        print(f"✓ ORB initialized (2000 features)")
+        print(f"✓ ORB optimized for Pi (1500 features)")
 
         # Build per-object state
         self.targets = {}
@@ -706,9 +712,29 @@ class ReferencePoseEstimator:
                     frame_count = 0
                     last_time = current_time
                 
-                # YOLO detection (always runs)
+                # 🚀 PI OPTIMIZATION: Adaptive YOLO Skipping
                 self.frame_idx += 1
-                run_yolo = (self.frame_idx % self.yolo_every_n == 0)
+                
+                # Check if any homography object is TRACKING
+                any_tracking = any(
+                    state.get("tracking_state") == TrackingState.TRACKING 
+                    for state in self.targets.values() 
+                    if state.get("method") == "homography" and state.get("reference_loaded")
+                )
+                
+                # Choose skip rate: 6 when tracking, 1 when searching/lost
+                mode_every_n = self.yolo_every_n_tracking if any_tracking else self.yolo_every_n_search
+                run_yolo = (self.frame_idx % mode_every_n == 0)
+                
+                # Safety: Force YOLO if nothing detected for 10 frames
+                if not any(b is not None for b in self.last_bboxes.values()):
+                    self.no_det_frames += 1
+                else:
+                    self.no_det_frames = 0
+                
+                if self.no_det_frames > 10:
+                    run_yolo = True
+                    self.frame_idx = 0  # Reset cycle
                 
                 if run_yolo:
                     bboxes, confidences = self.detect_objects(frame)
@@ -852,8 +878,22 @@ class ReferencePoseEstimator:
                         tracked_count += 1
                 
                 # UI
+                # 🚀 PI OPTIMIZATION: Show mode for debugging
+                any_tracking = any(
+                    state.get("tracking_state") == TrackingState.TRACKING 
+                    for state in self.targets.values() 
+                    if state.get("method") == "homography" and state.get("reference_loaded")
+                )
+                mode_every_n = self.yolo_every_n_tracking if any_tracking else self.yolo_every_n_search
+                mode_text = "TRACKING" if any_tracking else "SEARCH"
+                mode_color = (0, 255, 0) if any_tracking else (0, 255, 255)
+                
                 cv2.putText(display_frame, f"FPS: {fps}", (display_frame.shape[1]-100, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                cv2.putText(display_frame, f"Mode: {mode_text} (skip:{mode_every_n})", 
+                            (display_frame.shape[1]-250, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, mode_color, 1)
                 
                 if tracked_count > 0:
                     cv2.putText(display_frame, f"TRACKING {tracked_count}/5 OBJECTS", 
