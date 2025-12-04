@@ -13,6 +13,10 @@ import os
 os.environ["PYTHONNOUSERSITE"] = "1"
 os.environ["GST_PLUGIN_PATH"] = "/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:" + os.environ.get("GST_PLUGIN_PATH", "")
 
+if "DISPLAY" not in os.environ:
+    print("WARN: No DISPLAY variable found. Defaulting to physical display :0")
+    os.environ["DISPLAY"] = ":0"
+
 import gi
 # RPI CSI: GI requirements
 gi.require_version("Gst", "1.0")
