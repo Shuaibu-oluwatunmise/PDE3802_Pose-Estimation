@@ -6,7 +6,7 @@ Working version with camera_params.py output
 import os
 os.environ["PYTHONNOUSERSITE"] = "1"
 os.environ["GST_PLUGIN_PATH"] = "/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:" + os.environ.get("GST_PLUGIN_PATH", "")
-os.environ["QT_QPA_PLATFORM"] = "wayland" 
+
 
 import gi
 gi.require_version("Gst", "1.0")
