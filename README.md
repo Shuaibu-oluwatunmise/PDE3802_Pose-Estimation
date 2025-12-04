@@ -1,73 +1,123 @@
-# Object Detection and Pose Estimation with ROS TF
+Object Detection and Pose Estimation with ROS2 TF
+Real-time 6DOF pose estimation system for multiple objects using Raspberry Pi camera. Detects objects, estimates their poses, and publishes coordinates as ROS2 TF frames for visualization in RViz.
 
-### Overview
-This project implements real-time object detection and 6DOF pose estimation for 5 objects using a Raspberry Pi camera. The system detects objects, estimates their poses, and publishes their coordinates as TF frames relative to the camera frame for visualization in RViz.
+System Overview
+Detection & Tracking Methods:
 
-### Objectives
-- Detect and estimate pose for 5 different objects:
-  - 2 objects with ArUco markers (full 6DOF pose)
-  - 3 objects without markers (keypoint-based pose estimation)
-- Publish object coordinates as TF frames in ROS2
-- Visualize all frames in RViz
+3 objects tracked via homography-based pose estimation (keypoint matching)
+2 objects tracked via ArUco markers (fiducial-based pose)
+Output:
 
-### System Architecture
-```
-Raspberry Pi Camera → Object Detection → Pose Estimation → TF Publisher → RViz
-```
+6DOF pose estimation (3D position + 3D orientation)
+Real-time TF frame broadcasting to /tf topic
+Visual feedback with 3D coordinate axes overlay
+Quick Start
+1. Installation (Raspberry Pi)
+cd ~
+git clone https://github.com/Shuaibu-oluwatunmise/PDE3802_Pose-Estimation.git
+cd PDE3802_Pose-Estimation/Set_Up
+bash setup_workspace.sh
+Reload shell and activate environment:
 
-### Technical Approach
-- **ArUco-tagged objects**: `cv2.aruco.detectMarkers()` + `cv2.solvePnP()` for precise pose
-- **Non-tagged objects**: YOLOv8 keypoint detection + `cv2.solvePnP()` for full 6DOF pose
-- **Camera calibration**: Intrinsic parameters obtained via checkerboard calibration
-- **TF broadcasting**: Real-time publication of object transforms relative to camera frame
+source ~/.bashrc
+init_env
+2. Run Main System
+cd ~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation
+python3 pose_estimator_ros2.py
+3. Visualize in RViz
+Open new terminal:
 
-### Objects Detected
-1. [Object 1 - ArUco tagged]
-2. [Object 2 - ArUco tagged]
-3. [Object 3 - Keypoint-based]
-4. [Object 4 - Keypoint-based]
-5. [Object 5 - Keypoint-based]
+init_env
+ros2 run rviz2 rviz2
+In RViz:
 
-## Setup Instructions
+Add TF display
+Set fixed frame to camera_link
+View object frames: [object_name]_frame
+Controls
+Key	Action
+r	Reset homography calibrations
+s	Save current frame
+ESC	Exit
+Technical Approach
+Detection
+YOLOv8n object detector trained on ~14,000 annotated images
+Average of ~2,700 images per object class
+Custom dataset with varied lighting, angles, and backgrounds
+Pose Estimation
+Homography-based (3 objects):
 
-### Dataset
-The dataset used to train for this project can be downloaded from the link below:
+YOLO detects object bounding box
+ORB feature extraction within ROI
+Feature matching with reference image
+Homography matrix calculation (RANSAC)
+PnP solver estimates 6DOF pose
+ArUco-based (2 objects):
 
-After downloading, please extract the contents and place the 3 folders (data, frames_out, imagetetsting) inside the dataset folder in the project’s root directory (or update the data path in your configuration if needed).
+YOLO detects object bounding box
+ArUco marker detection within ROI
+Direct PnP solver for 6DOF pose (IPPE_SQUARE)
+Camera Calibration
+Checkerboard-based intrinsic calibration
+Parameters stored in camera_params.py
+Used for accurate pose estimation via cv2.solvePnP()
+Repository Structure
+PDE3802_Pose-Estimation/
+├── pose_estimator_ros2.py          # Main ROS2 node (PRIMARY FILE)
+├── combined_pose_estimation.py     # Standalone version (no ROS2)
+├── homography_pose_webcam.py       # Development/testing version
+│
+├── Camera_Calibration/
+│   ├── Camera_Calibration.py       # Calibration script
+│   └── camera_calibration/
+│       ├── camera_params.py        # Intrinsic parameters
+│       └── images/                 # Calibration images
+│
+├── Data_Preparation/
+│   ├── video_data_collection.py   # Record calibration videos
+│   ├── extract_frames.py          # Extract frames from videos
+│   └── auto_annotation.py         # Automated labeling pipeline
+│
+├── Detection/
+│   └── train.py                    # YOLO training script
+│
+├── runs/detect/yolov8n_detect_V1/
+│   ├── weights/best.pt            # Trained model weights
+│   └── [training metrics]         # Loss curves, confusion matrix
+│
+└── Set_Up/
+    ├── setup_workspace.sh         # Automated installation
+    ├── requirements.txt           # Python dependencies
+    └── SETUP_README.md            # Detailed setup guide
+Dependencies
+ROS2 Jazzy
+Python 3.10+
+OpenCV 4.x with ArUco module
+Ultralytics YOLOv8
+tf2_ros
+NumPy
+GStreamer (for Raspberry Pi camera)
+Notes
+Object selection flexibility: The current model (v1) is trained on 5 specific objects, but the system is designed to work with any objects by retraining the detection model and updating object dimensions in the configuration.
+Homography requirements: Objects must have sufficient texture/features for keypoint matching.
+ArUco visibility: Markers must remain visible and unoccluded for pose estimation.
+Dataset
+[Training Results]
+To be updated with training metrics, loss curves, and confusion matrices
 
-### Debugging commons Issues
+[Model Evaluation and Error Analysis]
+To be updated with validation results and error analysis
 
-### Training Results
+[Test Results]
+To be updated with real-world test scenarios and accuracy measurements
 
-The plots below show how
+Limitations and Challenges
+To be completed after full system evaluation
 
-### Model Evaluation and Error Analysis
-
-###  Error Analysis
-
-### Test and Training
-#### Test 1
-
-
-
-### Authors
-- Myu Wai Shin M00964135
-- Arash Bazrafshan M00766882
-- Oluwatunmise Raphael Shuaibu M00960413
-
-### Dependencies
-- ROS2 Jazzy
-- OpenCV 4.x with ArUco module
-- Ultralytics YOLOv8
-- tf2_ros
-- numpy
-
-### Limitations and Challenges
-[To be completed after implementation]
-
----
-**Course**: AI in Robotics (PDE3802)  
-**Institution**: Middlesex University London  
-**Date**: December 2025
-
-
+Authors
+Oluwatunmise Raphael Shuaibu M00960413
+Myu Wai Shin M00964135
+Arash Bazrafshan M00766882
+Course: AI in Robotics (PDE3802)
+Institution: Middlesex University London
+Date: December 2024
