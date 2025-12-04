@@ -885,12 +885,12 @@ class ReferencePoseEstimator(Node):  # 🤖 Inherit from ROS2 Node
                                     rvec_final = state["rvec_smooth"]
                                     tvec_final = state["tvec_smooth"]
                                     
-                                    # 🤖 ROS2: Publish TF
+                                    # 🤖 ROS2: Publish TF (accurate position)
                                     self.publish_tf(obj_name, rvec_final, tvec_final)
                                     
-                                    # Draw axes at bbox center (corners hidden for clean visualization)
-                                    if bbox is not None:
-                                        display_frame = self.draw_3d_axes_at_bbox_center(display_frame, obj_name, bbox, rvec_final, tvec_final)
+                                    # ✅ Draw at ACTUAL pose (not bbox center for accurate TF)
+                                    display_frame = self.draw_tracked_corners(display_frame, obj_name, corners)
+                                    display_frame = self.draw_3d_axes(display_frame, obj_name, rvec_final, tvec_final)
                                     
                                     y_info_offset = self.draw_pose_info(display_frame, obj_name, y_info_offset, rvec_final, tvec_final)
                                     tracked_count += 1
