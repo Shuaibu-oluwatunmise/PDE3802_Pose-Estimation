@@ -11,7 +11,7 @@ def main():
     IMG_SIZE = 640                       # Image size for training
     BATCH_SIZE = 32                      # Batch size per iteration
     PROJECT_NAME = "runs/detect"         # Directory to save results
-    RUN_NAME = "yolov8n_detect_V1"       # Subfolder name for this run
+    RUN_NAME = "yolov8n_detect_V2"       # Subfolder name for this run
     PATIENCE = 10
 
     # === DEVICE SELECTION ===
