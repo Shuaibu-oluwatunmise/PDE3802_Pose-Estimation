@@ -268,43 +268,45 @@ class HybridPnPPoseEstimatorROS2(Node):
         
         self.tf_broadcaster.sendTransform(t)
 
-    def init_gstreamer(self):
-        """Initialize GStreamer pipeline for RPi CSI camera"""
+    def start_camera(self):
+        """Start Raspberry Pi CSI Camera via GStreamer"""
+        self.get_logger().info(f"Starting Raspberry Pi CSI Camera via GStreamer/libcamera...")
         Gst.init(None)
-        
-        pipeline_str = (
-            f"libcamerasrc camera-name=/base/axi/pcie@120000/rp1/i2c@88000/imx708@1a ! "
-            f"video/x-raw,width=1536,height=864,framerate=30/1,format=RGBx ! "
-            f"videoconvert ! video/x-raw,format=BGR ! appsink name=sink"
+        gst_str = (
+            "libcamerasrc ! "
+            "video/x-raw,width=640,height=480,format=NV12,framerate=30/1 ! "
+            "videoconvert ! video/x-raw,format=BGR ! "
+            "appsink name=sink emit-signals=true max-buffers=2 drop=true"
         )
-        
-        self.get_logger().info(f"GStreamer pipeline: {pipeline_str}")
-        self.pipeline = Gst.parse_launch(pipeline_str)
-        self.sink = self.pipeline.get_by_name("sink")
-        self.sink.set_property("emit-signals", True)
-        self.pipeline.set_state(Gst.State.PLAYING)
-        self.get_logger().info("✓ GStreamer pipeline initialized")
+        try:
+            self.pipeline = Gst.parse_launch(gst_str)
+            self.sink = self.pipeline.get_by_name("sink")
+            self.pipeline.set_state(Gst.State.PLAYING)
+            self.get_logger().info(f"✓ GStreamer pipeline STARTED: 640x480")
+            return True
+        except Exception as e:
+            self.get_logger().error(f"Cannot start GStreamer pipeline: {e}")
+            return False
 
-    def get_frame(self):
-        """Get frame from GStreamer pipeline"""
-        sample = self.sink.emit("pull-sample")
+    def pull_frame(self, timeout_ns=10_000_000):
+        """Read frame from GStreamer pipeline"""
+        if self.sink is None:
+            return None
+        sample = self.sink.emit("try-pull-sample", timeout_ns)
         if sample is None:
             return None
-        
         buf = sample.get_buffer()
-        caps = sample.get_caps()
-        
-        width = caps.get_structure(0).get_value("width")
-        height = caps.get_structure(0).get_value("height")
-        
-        success, map_info = buf.map(Gst.MapFlags.READ)
-        if not success:
+        caps = sample.get_caps().get_structure(0)
+        w = caps.get_value("width")
+        h = caps.get_value("height")
+        ok, mapinfo = buf.map(Gst.MapFlags.READ)
+        if not ok:
             return None
-        
-        frame = np.ndarray(shape=(height, width, 3), dtype=np.uint8, buffer=map_info.data)
-        buf.unmap(map_info)
-        
-        return frame.copy()
+        try:
+            frame = np.frombuffer(mapinfo.data, dtype=np.uint8).reshape(h, w, 3)
+            return frame.copy()
+        finally:
+            buf.unmap(mapinfo)
 
     # ========== YOLO DETECTION ==========
     
@@ -762,22 +764,27 @@ class HybridPnPPoseEstimatorROS2(Node):
     
     def run(self):
         """Main processing loop"""
-        self.init_gstreamer()
+        if not self.start_camera():
+            return
         
         fps = 0
         prev_time = time.time()
         saved_count = 0
+        frame_count = 0
         
         try:
             while True:
-                frame = self.get_frame()
+                frame = self.pull_frame()
                 if frame is None:
                     continue
                 
                 # FPS calculation
+                frame_count += 1
                 curr_time = time.time()
-                fps = int(1.0 / (curr_time - prev_time + 1e-6))
-                prev_time = curr_time
+                if curr_time - prev_time >= 1.0:
+                    fps = frame_count
+                    frame_count = 0
+                    prev_time = curr_time
                 
                 display_frame = frame.copy()
                 
