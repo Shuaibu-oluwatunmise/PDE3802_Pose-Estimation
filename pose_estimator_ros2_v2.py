@@ -558,8 +558,12 @@ class CombinedPoseEstimatorROS2(Node):
 
     # ========== DRAWING ==========
     
-    def draw_detection_box(self, frame, obj_name, bbox):
-        """Draw YOLO detection box"""
+    def draw_detection_box(self, frame, obj_name, bbox, confidence):
+        """Draw YOLO detection box (only if confidence > 60%)"""
+        # Only draw if confidence is above threshold
+        if confidence < 0.60:
+            return frame
+            
         x1, y1, x2, y2 = bbox
         state = self.targets[obj_name]
         
@@ -569,7 +573,10 @@ class CombinedPoseEstimatorROS2(Node):
             color = (0, 255, 0)
         
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, f"{obj_name} ({state['method']})", (x1, y1-10),
+        
+        # Show confidence in the label
+        label = f"{obj_name} ({state['method']}) {confidence:.2f}"
+        cv2.putText(frame, label, (x1, y1-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         return frame
 
@@ -684,6 +691,14 @@ class CombinedPoseEstimatorROS2(Node):
                 # INDEPENDENT ARUCO DETECTION (not reliant on YOLO bboxes)
                 aruco_detections = self.detect_aruco_independent(frame)
                 
+                # Optionally draw YOLO bboxes for ArUco objects (if detected with high confidence)
+                for obj_name in self.targets:
+                    if self.targets[obj_name]["method"] == "aruco":
+                        bbox = bboxes.get(obj_name)
+                        if bbox is not None:
+                            conf = confidences.get(obj_name, 0.0)
+                            display_frame = self.draw_detection_box(display_frame, obj_name, bbox, conf)
+                
                 y_info_offset = 30
                 tracked_count = 0
                 
@@ -697,8 +712,10 @@ class CombinedPoseEstimatorROS2(Node):
                     
                     if bbox is None:
                         continue
-                        
-                    display_frame = self.draw_detection_box(display_frame, obj_name, bbox)
+                    
+                    # Draw bbox only if confidence > 60%
+                    conf = confidences.get(obj_name, 0.0)
+                    display_frame = self.draw_detection_box(display_frame, obj_name, bbox, conf)
                     
                     # === HOMOGRAPHY PATH ===
                     if not state.get("calibrated"):
