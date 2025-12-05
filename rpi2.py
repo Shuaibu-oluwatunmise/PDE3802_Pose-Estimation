@@ -199,9 +199,16 @@ class MultiObjectPoseEstimator:
 
         # --- ArUco detector (independent of YOLO) ---
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-        self.aruco_params = cv2.aruco.DetectorParameters_create()
+
+        # OpenCV version compatibility: DetectorParameters vs DetectorParameters_create
+        if hasattr(cv2.aruco, "DetectorParameters_create"):
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
+        else:
+            self.aruco_params = cv2.aruco.DetectorParameters()
+
         self.aruco_id_to_name = {v: k for k, v in ARUCO_IDS.items()}
         print("✓ ArUco dictionary and parameters initialized.")
+
 
     # ------------------------------------------------------------------
     # GStreamer Pipeline Setup (RPI CSI)
