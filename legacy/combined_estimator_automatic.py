@@ -745,7 +745,7 @@ class CombinedPoseEstimator:
 
 
 def main():
-    yolo_model_path = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
+    yolo_model_path = './runs/detect/yolov8n_detect_V2/weights/best.pt'
     camera_index = 1
     
     estimator = CombinedPoseEstimator(yolo_model_path, camera_index)
