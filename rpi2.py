@@ -527,18 +527,40 @@ class MultiObjectPoseEstimator:
             if marker_size_mm is None:
                 continue
 
-            # Pose from single marker
-            rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                marker_corners,
-                marker_size_mm,
-                self.camera_matrix,
-                self.dist_coeffs
-            )
-            if rvecs is None or tvecs is None:
-                continue
-
-            rvec_raw = rvecs[0].reshape(3, 1)
-            tvec_raw = tvecs[0].reshape(3, 1)
+            # Pose estimation - Handle API change
+            # New API doesn't have estimatePoseSingleMarkers, need to use solvePnP directly
+            if hasattr(cv2.aruco, "estimatePoseSingleMarkers"):
+                # Old API
+                rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+                    marker_corners,
+                    marker_size_mm,
+                    self.camera_matrix,
+                    self.dist_coeffs
+                )
+                rvec_raw = rvecs[0].reshape(3, 1)
+                tvec_raw = tvecs[0].reshape(3, 1)
+            else:
+                # New API - manually calculate pose using solvePnP
+                half_size = marker_size_mm / 2.0
+                obj_points = np.array([
+                    [-half_size,  half_size, 0],
+                    [ half_size,  half_size, 0],
+                    [ half_size, -half_size, 0],
+                    [-half_size, -half_size, 0]
+                ], dtype=np.float32)
+                
+                img_points = marker_corners[0].reshape(-1, 2).astype(np.float32)
+                
+                success, rvec_raw, tvec_raw = cv2.solvePnP(
+                    obj_points,
+                    img_points,
+                    self.camera_matrix,
+                    self.dist_coeffs,
+                    flags=cv2.SOLVEPNP_IPPE_SQUARE
+                )
+                
+                if not success:
+                    continue
 
             # EMA smoothing (same pattern as homography objects)
             alpha = state.get("ema_alpha", 0.3)
