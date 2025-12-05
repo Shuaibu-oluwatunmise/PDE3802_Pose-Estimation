@@ -114,7 +114,7 @@ class CombinedPoseEstimatorROS2(Node):
         
         # TF Broadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.camera_frame = "camera_link"
+        self.camera_frame = "camera_link_G4"
         
         self.get_logger().info("="*60)
         self.get_logger().info("ROS2 Pose Estimator Node Started")
