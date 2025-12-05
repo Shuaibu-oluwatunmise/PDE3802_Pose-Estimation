@@ -12,12 +12,13 @@ Real-time 6DOF pose estimation system for multiple objects using Raspberry Pi ca
 
 - [System Overview](#system-overview)
 - [Prerequisites](#prerequisites)
+- [SSH Connection Setup](#ssh-connection-setup)
 - [Installation](#installation)
 - [Running the System](#running-the-system)
-- [SSH Access (Optional)](#ssh-access-optional)
+- [Daily Usage](#daily-usage)
+- [Visualization in RViz](#visualization-in-rviz)
 - [Repository Structure](#repository-structure)
 - [Technical Approach](#technical-approach)
-- [Dependencies](#dependencies)
 - [Controls](#controls)
 - [Notes & Limitations](#notes--limitations)
 - [Authors](#authors)
@@ -44,11 +45,39 @@ Real-time 6DOF pose estimation system for multiple objects using Raspberry Pi ca
 ### Hardware
 - Raspberry Pi (tested on Pi 4)
 - Raspberry Pi Camera Module (CSI interface)
+- Laptop/PC for SSH connection
 
 ### Software
-- Ubuntu 24.04 (or compatible)
+- Ubuntu 24.04 (or compatible) on Raspberry Pi
 - ROS2 Jazzy
 - Python 3.10+
+
+### Network
+- Both Raspberry Pi and laptop must be connected to the same network
+
+---
+
+## SSH Connection Setup
+
+### Step 1: Get Raspberry Pi IP Address
+
+On the Raspberry Pi, run:
+```bash
+hostname -I
+```
+
+Note the IP address (e.g., `192.168.1.100`)
+
+### Step 2: Connect from Your Laptop
+
+On your laptop, run:
+```bash
+ssh ros@<ip-address>
+```
+
+Replace `<ip-address>` with the IP address from Step 1.
+
+Enter the password when prompted.
 
 ---
 
@@ -80,6 +109,13 @@ source ~/.bashrc
 init_env
 ```
 
+### 4. Activate Environment on Raspberry Pi
+
+If you're running via SSH, also run on the Raspberry Pi terminal (desktop/direct access):
+```bash
+init_env
+```
+
 ---
 
 ## Running the System
@@ -99,46 +135,45 @@ cd ~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation/Camera_Calibration/camera
 touch __init__.py
 ```
 
-### Step 3: Run Main Pose Estimation System
+### Step 3: Return to Repository Root
 ```bash
 cd ~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation
+```
+
+### Step 4: Run Main Pose Estimation System
+```bash
 python3 pose_estimator_ros2_v2.py
 ```
 
-### Step 4: Visualize in RViz (Optional)
+---
 
-Open a new terminal:
+## Daily Usage
+
+Every time you open a new terminal:
 ```bash
 init_env
-ros2 run rviz2 rviz2
+```
+
+**This command:**
+- ✅ Sources ROS2 Jazzy
+- ✅ Activates Python venv (`pose_est`)
+- ✅ Sets X11 display permissions (for `cv2.imshow` over SSH)
+- ✅ Sources workspace overlay (if built)
+
+---
+
+## Visualization in RViz
+
+Open a new terminal and run:
+```bash
+init_env
+rviz2
 ```
 
 **In RViz:**
 1. Add **TF** display
 2. Set **Fixed Frame** to `camera_link_G4`
 3. View object frames: `[object_name]_frame`
-
----
-
-## SSH Access (Optional)
-
-To run the system remotely via SSH:
-
-### On Raspberry Pi:
-```bash
-hostname -I
-```
-
-Note the IP address (e.g., `192.168.1.100`)
-
-### On Your Laptop:
-```bash
-ssh ros@<ip-address>
-```
-
-Enter the password when prompted.
-
-**Note:** Ensure both devices are connected to the same network.
 
 ---
 
@@ -207,18 +242,6 @@ PDE3802_Pose-Estimation/
 
 ---
 
-## Dependencies
-
-- **ROS2 Jazzy**
-- **Python 3.10+**
-- **OpenCV 4.x** with ArUco module
-- **Ultralytics YOLOv8**
-- **tf2_ros**
-- **NumPy**
-- **GStreamer** (for Raspberry Pi camera)
-
----
-
 ## Controls
 
 | Key   | Action                        |
@@ -237,18 +260,15 @@ PDE3802_Pose-Estimation/
 - **Homography requirements:** Objects must have sufficient texture/features for keypoint matching.
 - **ArUco visibility:** Markers must remain visible and unoccluded for pose estimation.
 
-### Daily Usage
+### Dependencies
 
-Every time you open a new terminal:
-```bash
-init_env
-```
-
-This command:
-- ✅ Sources ROS2 Jazzy
-- ✅ Activates Python venv (`pose_est`)
-- ✅ Sets X11 display permissions (for `cv2.imshow` over SSH)
-- ✅ Sources workspace overlay (if built)
+- **ROS2 Jazzy**
+- **Python 3.10+**
+- **OpenCV 4.x** with ArUco module
+- **Ultralytics YOLOv8**
+- **tf2_ros**
+- **NumPy**
+- **GStreamer** (for Raspberry Pi camera)
 
 ---
 
