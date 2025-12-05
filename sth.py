@@ -31,7 +31,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
-from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster # <-- ADDED StaticTransformBroadcaster
+from tf2_ros import TransformBroadcaster
 import tf_transformations
 
 from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
@@ -112,14 +112,9 @@ class CombinedPoseEstimatorROS2(Node):
         # Initialize ROS2 node
         super().__init__('pose_estimator_node')
         
-        # TF Broadcasters
+        # TF Broadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.static_broadcaster = StaticTransformBroadcaster(self) # <-- INITIALIZE STATIC BROADCASTER
-        self.camera_frame = "camera_link"
-        self.world_frame = "world" # <-- DEFINE WORLD FRAME
-        
-        # PUBLISH STATIC TRANSFORM FROM WORLD TO CAMERA_LINK
-        self._publish_static_transform()
+        self.camera_frame = "camera_link_G4"
         
         self.get_logger().info("="*60)
         self.get_logger().info("ROS2 Pose Estimator Node Started")
@@ -236,31 +231,6 @@ class CombinedPoseEstimatorROS2(Node):
         self.orb = cv2.ORB_create(nfeatures=2000, fastThreshold=12)
         self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         self.get_logger().info(f"✓ ORB initialized (2000 features)")
-
-    # --- NEW METHOD TO PUBLISH STATIC TRANSFORM ---
-    def _publish_static_transform(self):
-        """Publish a static transform from 'world' to 'camera_link'."""
-        t = TransformStamped()
-        
-        # Header
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = self.world_frame # Parent frame (often the RViz Fixed Frame)
-        t.child_frame_id = self.camera_frame # Child frame (your camera)
-        
-        # Set to zero transform (camera_link at world origin)
-        t.transform.translation.x = 0.0
-        t.transform.translation.y = 0.0
-        t.transform.translation.z = 0.0
-        
-        # Identity rotation (no rotation relative to world)
-        t.transform.rotation.w = 1.0 
-        t.transform.rotation.x = 0.0
-        t.transform.rotation.y = 0.0
-        t.transform.rotation.z = 0.0
-        
-        self.static_broadcaster.sendTransform(t)
-        self.get_logger().info(f"✓ Published static transform: {self.world_frame} -> {self.camera_frame}")
-    # ---------------------------------------------
 
     def publish_tf(self, obj_name, rvec, tvec):
         """Publish TF transform for an object"""
