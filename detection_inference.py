@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Optimized YOLO Detection Script with Adaptive Frame Skipping
-Performance optimized for Raspberry Pi
-Detection only - no pose estimation
+Simplified Adaptive YOLO Detection
+Stable frame skipping for Raspberry Pi
 """
 
 import os
 os.environ["PYTHONNOUSERSITE"] = "1"
 os.environ["GST_PLUGIN_PATH"] = "/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:" + os.environ.get("GST_PLUGIN_PATH", "")
-
 if "DISPLAY" not in os.environ:
-    print("WARN: No DISPLAY variable found. Defaulting to physical display :0")
     os.environ["DISPLAY"] = ":0"
 
 import gi
@@ -22,365 +19,208 @@ import numpy as np
 from ultralytics import YOLO
 import time
 
-class AdaptiveYOLODetector:
+class StableYOLODetector:
     def __init__(self, model_path):
         print("\n" + "="*60)
-        print("ADAPTIVE YOLO DETECTION (OPTIMIZED FOR PI)")
+        print("STABLE ADAPTIVE YOLO DETECTION")
         print("="*60)
         
-        # Load YOLO model
-        print(f"Loading YOLO model: {model_path}")
+        # Load model
+        print(f"Loading: {model_path}")
         self.model = YOLO(model_path)
         self.model.fuse()
         
-        # Try FP16 for speed
+        # Try FP16
         try:
             self.model.model.half()
-            print("✓ FP16 (half precision) enabled")
+            print("✓ FP16 enabled")
         except:
-            print("⚠ FP16 not available, using FP32")
+            print("⚠ FP16 unavailable")
         
         self.class_names = self.model.names
-        print(f"\nModel Classes: {self.class_names}")
-        print(f"Number of classes: {len(self.class_names)}")
-        print("="*60 + "\n")
+        print(f"Classes: {list(self.class_names.values())}")
         
         # Camera
         self.pipeline = None
         self.sink = None
         
-        # ADAPTIVE FRAME SKIPPING (like your working script)
+        # Adaptive settings
         self.frame_idx = 0
-        self.yolo_every_n_tracking = 3    # Run YOLO every 3rd frame when tracking
-        self.yolo_every_n_search = 1      # Run YOLO every frame when searching
-        self.no_det_frames = 0            # Counter for lost detections
+        self.skip_tracking = 3    # Skip every 3rd frame when tracking
+        self.skip_search = 1      # No skip when searching
+        self.no_det_count = 0
         
-        # Cache last detections
-        self.last_bboxes = {}
-        self.last_confidences = {}
+        # Detection cache - store as simple dict
+        self.cached_boxes = []  # List of (class_name, bbox, conf)
         
-        # Detection settings (optimized like your script)
-        self.conf_threshold = 0.3    # Lower threshold to catch more
-        self.iou_threshold = 0.5
-        self.img_size = 384          # Good balance of speed/accuracy
+        # Settings
+        self.conf = 0.3
+        self.iou = 0.5
+        self.imgsz = 384
         
-        # Colors for each class
-        self.colors = [
-            (0, 255, 0),      # Green
-            (255, 0, 0),      # Blue
-            (0, 0, 255),      # Red
-            (255, 255, 0),    # Cyan
-            (255, 0, 255),    # Magenta
-            (0, 255, 255),    # Yellow
-            (128, 0, 128),    # Purple
-            (255, 165, 0),    # Orange
-        ]
+        # Colors
+        self.colors = {
+            'card_game': (0, 255, 0),
+            'circuit_board': (255, 0, 0),
+            'estop': (0, 0, 255),
+            'notebook': (255, 255, 0),
+            'phone': (255, 0, 255),
+        }
         
-        print(f"Settings: imgsz={self.img_size}, conf={self.conf_threshold}")
-        print(f"Adaptive skipping: every {self.yolo_every_n_search} frame (search) / every {self.yolo_every_n_tracking} frames (tracking)")
+        print(f"Settings: imgsz={self.imgsz}, conf={self.conf}")
         print("="*60 + "\n")
     
     def start_camera(self):
-        """Start Raspberry Pi CSI Camera via GStreamer"""
-        print("Starting Raspberry Pi CSI Camera via GStreamer/libcamera...")
+        print("Starting camera...")
         Gst.init(None)
-        
         gst_str = (
             "libcamerasrc ! "
             "video/x-raw,width=640,height=480,format=NV12,framerate=30/1 ! "
             "videoconvert ! video/x-raw,format=BGR ! "
             "appsink name=sink emit-signals=true max-buffers=2 drop=true"
         )
-        
-        try:
-            self.pipeline = Gst.parse_launch(gst_str)
-            self.sink = self.pipeline.get_by_name("sink")
-            self.pipeline.set_state(Gst.State.PLAYING)
-            print("✓ GStreamer pipeline STARTED: 640x480\n")
-            return True
-        except Exception as e:
-            print(f"✗ Camera error: {e}")
-            return False
+        self.pipeline = Gst.parse_launch(gst_str)
+        self.sink = self.pipeline.get_by_name("sink")
+        self.pipeline.set_state(Gst.State.PLAYING)
+        print("✓ Camera ready\n")
+        return True
     
-    def pull_frame(self, timeout_ns=10_000_000):
-        """Read frame from GStreamer pipeline"""
-        if self.sink is None:
+    def pull_frame(self):
+        if not self.sink:
             return None
-        
-        sample = self.sink.emit("try-pull-sample", timeout_ns)
-        if sample is None:
+        sample = self.sink.emit("try-pull-sample", 10_000_000)
+        if not sample:
             return None
-        
         buf = sample.get_buffer()
         caps = sample.get_caps().get_structure(0)
-        w = caps.get_value("width")
-        h = caps.get_value("height")
-        
+        w, h = caps.get_value("width"), caps.get_value("height")
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if not ok:
             return None
-        
         try:
-            frame = np.frombuffer(mapinfo.data, dtype=np.uint8).reshape(h, w, 3)
-            return frame.copy()
+            return np.frombuffer(mapinfo.data, dtype=np.uint8).reshape(h, w, 3).copy()
         finally:
             buf.unmap(mapinfo)
     
-    def detect_objects(self, frame):
-        """Run YOLO detection"""
+    def detect_and_cache(self, frame):
+        """Run detection and cache results"""
         results = self.model(
             frame,
             verbose=False,
-            imgsz=self.img_size,
-            conf=self.conf_threshold,
-            iou=self.iou_threshold,
-            half=True  # Use FP16 if available
+            imgsz=self.imgsz,
+            conf=self.conf,
+            iou=self.iou,
+            half=True
         )
         
-        return results[0]
+        result = results[0]
+        self.cached_boxes = []
+        
+        if result.boxes is not None and len(result.boxes) > 0:
+            for box in result.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = float(box.conf[0])
+                cls_id = int(box.cls[0])
+                cls_name = self.class_names.get(cls_id, "unknown")
+                
+                self.cached_boxes.append((cls_name, (x1, y1, x2, y2), conf))
     
-    def draw_detections(self, frame, result):
-        """Draw bounding boxes and labels"""
-        if result.boxes is None or len(result.boxes) == 0:
-            return frame, {}
-        
-        current_detections = {}
-        
-        for box in result.boxes:
-            # Get box info
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            confidence = float(box.conf[0])
-            class_id = int(box.cls[0])
-            class_name = self.class_names.get(class_id, "unknown")
+    def draw_cached_boxes(self, frame):
+        """Draw cached detections on frame"""
+        for cls_name, (x1, y1, x2, y2), conf in self.cached_boxes:
+            # Get color
+            color = self.colors.get(cls_name, (255, 255, 255))
             
-            # Store detection
-            if class_name not in current_detections:
-                current_detections[class_name] = []
-            current_detections[class_name].append({
-                'bbox': [x1, y1, x2, y2],
-                'conf': confidence
-            })
-            
-            # Get color for this class
-            color = self.colors[class_id % len(self.colors)]
-            
-            # Draw bounding box
+            # Draw box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             
-            # Create label
-            label = f"{class_name}: {confidence:.2f}"
-            
-            # Get label size for background
-            (label_w, label_h), baseline = cv2.getTextSize(
-                label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
-            )
-            
-            # Draw label background
-            cv2.rectangle(
-                frame,
-                (x1, y1 - label_h - 10),
-                (x1 + label_w, y1),
-                color,
-                -1
-            )
-            
-            # Draw label text
-            cv2.putText(
-                frame,
-                label,
-                (x1, y1 - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2
-            )
+            # Draw label
+            label = f"{cls_name} {conf:.2f}"
+            (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(frame, (x1, y1-h-10), (x1+w, y1), color, -1)
+            cv2.putText(frame, label, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        return frame, current_detections
+        return frame
     
     def run(self):
-        """Main detection loop with adaptive frame skipping"""
-        print("Controls:")
-        print("  'q' or ESC - Quit")
-        print("  's' - Save frame")
-        print("  '+' - Increase confidence threshold")
-        print("  '-' - Decrease confidence threshold")
-        print("="*60 + "\n")
+        print("Controls: 'q'=quit, 's'=save\n")
         
         if not self.start_camera():
             return
         
-        frame_count = 0
-        saved_count = 0
-        fps = 0
-        last_time = time.time()
-        
-        print("Starting adaptive detection...\n")
+        fps, count, last_t = 0, 0, time.time()
+        saved = 0
         
         try:
             while True:
-                # Get frame
                 frame = self.pull_frame()
                 if frame is None:
                     continue
                 
-                frame_count += 1
-                display_frame = frame.copy()
-                
-                # Calculate FPS
-                current_time = time.time()
-                if current_time - last_time >= 1.0:
-                    fps = frame_count
-                    frame_count = 0
-                    last_time = current_time
-                
-                # ADAPTIVE FRAME SKIPPING (like your working script)
-                self.frame_idx += 1
-                
-                # Decide mode: "tracking" if we have detections, "search" if not
-                any_detections = bool(self.last_bboxes)
-                mode_every_n = self.yolo_every_n_tracking if any_detections else self.yolo_every_n_search
-                
-                # Determine if we run YOLO this frame
-                run_yolo = (self.frame_idx % mode_every_n == 0)
-                
-                # Safety: if no detections for 10 frames, force search mode
-                if not any_detections:
-                    self.no_det_frames += 1
-                else:
-                    self.no_det_frames = 0
-                
-                if self.no_det_frames > 10:
-                    run_yolo = True
-                    self.frame_idx = 0
-                
-                # Run detection or use cached results
-                if run_yolo:
-                    result = self.detect_objects(frame)
-                    display_frame, detections = self.draw_detections(display_frame, result)
-                    self.last_bboxes = detections
-                else:
-                    # Use cached detections (just for display mode indicator)
-                    detections = self.last_bboxes
-                    if result is not None:
-                        display_frame, _ = self.draw_detections(display_frame, result)
-                
-                # Count total detections
-                total_count = sum(len(v) for v in detections.values())
-                
-                # Draw info overlay
-                info_y = 30
+                count += 1
                 
                 # FPS
-                cv2.putText(
-                    display_frame,
-                    f"FPS: {fps}",
-                    (10, info_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2
-                )
-                info_y += 30
+                now = time.time()
+                if now - last_t >= 1.0:
+                    fps = count
+                    count = 0
+                    last_t = now
                 
-                # Mode indicator (like your script)
-                if run_yolo:
-                    mode_text = "Mode: SEARCH (YOLO)"
-                    mode_color = (0, 255, 255)  # Yellow
+                # Adaptive frame skip
+                self.frame_idx += 1
+                
+                has_detections = len(self.cached_boxes) > 0
+                skip_rate = self.skip_tracking if has_detections else self.skip_search
+                
+                run_yolo = (self.frame_idx % skip_rate == 0)
+                
+                # Safety: force detection if lost for 10 frames
+                if not has_detections:
+                    self.no_det_count += 1
+                    if self.no_det_count > 10:
+                        run_yolo = True
+                        self.frame_idx = 0
                 else:
-                    mode_text = f"Mode: TRACKING (SKIP {mode_every_n})"
-                    mode_color = (0, 255, 0)  # Green
+                    self.no_det_count = 0
                 
-                cv2.putText(
-                    display_frame,
-                    mode_text,
-                    (10, info_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    mode_color,
-                    2
-                )
-                info_y += 30
+                # Run or skip
+                if run_yolo:
+                    self.detect_and_cache(frame)
                 
-                # Confidence threshold
-                cv2.putText(
-                    display_frame,
-                    f"Conf: {self.conf_threshold:.2f}",
-                    (10, info_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 0),
-                    2
-                )
-                info_y += 30
+                # Always draw cached boxes
+                display = self.draw_cached_boxes(frame.copy())
                 
-                # Detection count
-                cv2.putText(
-                    display_frame,
-                    f"Objects: {total_count}",
-                    (10, info_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    2
-                )
+                # Info overlay
+                cv2.putText(display, f"FPS: {fps}", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 
-                # Show detections per class
-                if total_count > 0:
-                    status_y = display_frame.shape[0] - 20
-                    status_text = " | ".join([f"{k}: {len(v)}" for k, v in detections.items()])
-                    cv2.putText(
-                        display_frame,
-                        status_text,
-                        (10, status_y),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (0, 255, 0),
-                        2
-                    )
+                mode = "SEARCH" if run_yolo else f"TRACK (skip {skip_rate})"
+                color = (0, 255, 255) if run_yolo else (0, 255, 0)
+                cv2.putText(display, mode, (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 
-                # Display
-                cv2.imshow('Adaptive YOLO Detection', display_frame)
+                cv2.putText(display, f"Objects: {len(self.cached_boxes)}", (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 
-                # Handle keys
+                cv2.imshow('Stable Detection', display)
+                
+                # Keys
                 key = cv2.waitKey(1) & 0xFF
-                
-                if key == 27 or key == ord('q'):  # ESC or 'q'
-                    print("\n\nExiting...")
+                if key == ord('q') or key == 27:
                     break
-                
-                elif key == ord('s'):  # Save frame
-                    filename = f"detection_{saved_count:03d}.jpg"
-                    cv2.imwrite(filename, display_frame)
-                    print(f"\n✓ Saved: {filename}")
-                    saved_count += 1
-                
-                elif key == ord('+') or key == ord('='):  # Increase threshold
-                    self.conf_threshold = min(0.95, self.conf_threshold + 0.05)
-                    print(f"\n✓ Confidence threshold: {self.conf_threshold:.2f}")
-                
-                elif key == ord('-') or key == ord('_'):  # Decrease threshold
-                    self.conf_threshold = max(0.05, self.conf_threshold - 0.05)
-                    print(f"\n✓ Confidence threshold: {self.conf_threshold:.2f}")
+                elif key == ord('s'):
+                    cv2.imwrite(f"detect_{saved:03d}.jpg", display)
+                    print(f"✓ Saved detect_{saved:03d}.jpg")
+                    saved += 1
         
         except KeyboardInterrupt:
-            print("\n\nInterrupted by user")
-        
+            pass
         finally:
-            # Cleanup
             if self.pipeline:
                 self.pipeline.set_state(Gst.State.NULL)
             cv2.destroyAllWindows()
-            print("\nCleaned up. Goodbye!")
-
-
-def main():
-    # Configuration
-    model_path = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
-    
-    # Create and run detector
-    detector = AdaptiveYOLODetector(model_path)
-    detector.run()
+            print("\nDone!")
 
 
 if __name__ == "__main__":
-    main()
+    StableYOLODetector('runs/detect/yolov8n_detect_V2/weights/best.pt').run()
