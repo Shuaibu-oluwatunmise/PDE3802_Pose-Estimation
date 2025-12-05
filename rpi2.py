@@ -82,6 +82,7 @@ OBJECT_CONFIGS = {
         "min_inlier_ratio": 0.5,
         "ema_alpha": 0.2,
     },
+
     # ArUco objects
     "phone": {
         "label_substring": "phone",
@@ -89,6 +90,11 @@ OBJECT_CONFIGS = {
         "method": "aruco",
         "aruco_id": ARUCO_IDS["phone"],
         "marker_size_mm": ARUCO_MARKER_SIZES["phone"],
+
+        # 🔧 ADD THESE:
+        "width_mm": ARUCO_MARKER_SIZES["phone"],
+        "height_mm": ARUCO_MARKER_SIZES["phone"],
+
         "ema_alpha": 0.3,
     },
     "estop": {
@@ -97,6 +103,11 @@ OBJECT_CONFIGS = {
         "method": "aruco",
         "aruco_id": ARUCO_IDS["estop"],
         "marker_size_mm": ARUCO_MARKER_SIZES["estop"],
+
+        
+        "width_mm": ARUCO_MARKER_SIZES["estop"],
+        "height_mm": ARUCO_MARKER_SIZES["estop"],
+
         "ema_alpha": 0.3,
     },
 }
