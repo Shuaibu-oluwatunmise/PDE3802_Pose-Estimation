@@ -34,7 +34,7 @@ from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
 import tf_transformations
 
-from camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
+from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
 
 # ==============================================================================
 # ARUCO CONFIG
