@@ -34,7 +34,7 @@ from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
 import tf_transformations
 
-from camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
+from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
 
 # ==============================================================================
 # ARUCO CONFIG
@@ -42,13 +42,13 @@ from camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 
 ARUCO_IDS = {
-    "wallet": 0,
-    "headset": 1,
+    "phone": 0,
+    "estop": 1,
 }
 
 ARUCO_MARKER_SIZES = {
-    "wallet": 50.0,   # mm
-    "headset": 32.0,  # mm
+    "phone": 50.0,   # mm
+    "estop": 32.0,  # mm
 }
 
 # ==============================================================================
@@ -56,20 +56,20 @@ ARUCO_MARKER_SIZES = {
 # ==============================================================================
 OBJECT_CONFIGS = {
     # Homography objects
-    "repair_mat": {
-        "label_substring": "repair_mat",
-        "width_mm": 89.0,
-        "height_mm": 144.0,
+    "card_game": {
+        "label_substring": "card_game",
+        "width_mm": 93.0,
+        "height_mm": 115.0,
         "axis_color": (0, 255, 0),       # Green
         "method": "homography",
         "min_matches": 4,
         "min_inlier_ratio": 0.25,
         "ema_alpha": 0.2,
     },
-    "game_box": {
-        "label_substring": "game_box",
-        "width_mm": 95.0,
-        "height_mm": 124.0,
+    "circuit_board": {
+        "label_substring": "circuit_board",
+        "width_mm": 210.0,
+        "height_mm": 210.0,
         "axis_color": (255, 0, 0),       # Blue
         "method": "homography",
         "min_matches": 10,
@@ -78,8 +78,8 @@ OBJECT_CONFIGS = {
     },
     "notebook": {
         "label_substring": "notebook",
-        "width_mm": 210.0,
-        "height_mm": 295.0,
+        "width_mm": 147.0,
+        "height_mm": 209.0,
         "axis_color": (0, 0, 255),       # Red
         "method": "homography",
         "min_matches": 10,
@@ -87,20 +87,20 @@ OBJECT_CONFIGS = {
         "ema_alpha": 0.2,
     },
     # ArUco objects
-    "wallet": {
-        "label_substring": "wallet",
+    "phone": {
+        "label_substring": "phone",
         "axis_color": (255, 255, 0),     # Cyan
         "method": "aruco",
-        "aruco_id": ARUCO_IDS["wallet"],
-        "marker_size_mm": ARUCO_MARKER_SIZES["wallet"],
+        "aruco_id": ARUCO_IDS["phone"],
+        "marker_size_mm": ARUCO_MARKER_SIZES["phone"],
         "ema_alpha": 0.3,
     },
-    "headset": {
-        "label_substring": "headset",
+    "estop": {
+        "label_substring": "estop",
         "axis_color": (255, 0, 255),     # Magenta
         "method": "aruco",
-        "aruco_id": ARUCO_IDS["headset"],
-        "marker_size_mm": ARUCO_MARKER_SIZES["headset"],
+        "aruco_id": ARUCO_IDS["estop"],
+        "marker_size_mm": ARUCO_MARKER_SIZES["estop"],
         "ema_alpha": 0.3,
     },
 }
@@ -841,7 +841,7 @@ def main():
     print("="*60)
     print("✓ Camera calibration from camera_params.py")
     
-    yolo_model_path = 'runs/detect/yolov8n_detect_V1/weights/best.pt'
+    yolo_model_path = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
     camera_index = 1
     
     estimator = CombinedPoseEstimatorROS2(yolo_model_path, camera_index)
