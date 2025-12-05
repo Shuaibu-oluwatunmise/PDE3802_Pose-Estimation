@@ -78,21 +78,18 @@ This command:
 init_env
 
 # Navigate to Detection folder
-cd ~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation/src/Detection
+cd ~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation/Camera_Calibration
 
 # Run camera calibration (on Pi desktop)
-export QT_QPA_PLATFORM=wayland
-python3 Csi_camera_calibration.py
+python3 Camera_Calibration.py
 
-# Run pose tracking
-python3 pi_csi_pose_tracker.py
+# Run this command
+cd ~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation/Camera_Calibration/camera_calibration
+touch __init__.py
 
 # Build ROS2 packages
 cd ~/pose_estimation_ws_t1
-colcon build
 
-# Check Python location (should show venv path)
-which python3
 ```
 
 ---
@@ -132,21 +129,6 @@ source ~/.bashrc
 source ~/pose_estimation_ws_t1/initialise_environment.sh
 ```
 
-### Display issues when running CV scripts over SSH:
-```bash
-# Set display variable
-export DISPLAY=:0
-export QT_QPA_PLATFORM=wayland
-
-# Or run directly on Pi desktop (not via SSH)
-```
-
-### Python not from venv:
-```bash
-init_env
-which python3  # Should show: ~/pose_estimation_ws_t1/pose_est/bin/python3
-```
-
 ### Dependencies not installing:
 ```bash
 # Activate venv manually
@@ -156,60 +138,6 @@ source ~/pose_estimation_ws_t1/pose_est/bin/activate
 pip install -r ~/pose_estimation_ws_t1/src/office-item-classifier/setup/requirements.txt
 ```
 
----
-
-## Manual Setup (If Automated Fails)
-
-If the automated script fails, you can set up manually:
-
-```bash
-# 1. Create workspace
-mkdir -p ~/pose_estimation_ws_t1/src
-
-# 2. Move repository
-mv ~/PDE3802_Pose-Estimation ~/pose_estimation_ws_t1/src/
-
-# 3. Create venv
-cd ~/pose_estimation_ws_t1
-source /opt/ros/jazzy/setup.bash
-python3 -m venv pose_est --system-site-packages
-source pose_est/bin/activate
-
-# 4. Install dependencies
-pip install --upgrade pip
-pip install -r src/PDE3802_Pose-Estimation/setup/requirements.txt
-
-# 5. Create init script
-cat > initialise_environment.sh << 'EOF'
-#!/bin/bash
-if [ -n "$DISPLAY" ]; then
-    xhost +local:$(whoami) > /dev/null 2>&1
-fi
-source /opt/ros/jazzy/setup.bash
-source ~/pose_estimation_ws_t1/pose_est/bin/activate
-if [ -f ~/pose_estimation_ws_t1/install/setup.bash ]; then
-    source ~/pose_estimation_ws_t1/install/setup.bash
-fi
-echo "✓ Environment ready"
-EOF
-
-chmod +x initialise_environment.sh
-
-# 6. Add alias
-echo "alias init_env='source ~/pose_estimation_ws_t1/initialise_environment.sh'" >> ~/.bashrc
-source ~/.bashrc
-```
-
----
-
-## Getting Help
-
-- Check the main README: `~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation/README.md`
-- Review workspace structure: `ls -la ~/pose_estimation_ws_t1/`
-- Check Python packages: `init_env && pip list`
-- Verify ROS2: `init_env && ros2 --version`
-
----
 
 **Setup Version:** 1.0  
 **Last Updated:** December 2024

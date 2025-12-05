@@ -2,8 +2,8 @@
 """
 Combined Pose Estimation System with ROS2 TF Broadcasting
 Tracks all 5 objects using both Homography and ArUco methods
-- Homography: game_box, repair_mat, notebook
-- ArUco: wallet, headset
+- Homography: card_game, circuit_board, notebook
+- ArUco: phone, estop (INDEPENDENT DETECTION - not reliant on YOLO)
 - Publishes TF transforms to ROS2
 - Uses Raspberry Pi CSI Camera via GStreamer
 """
@@ -31,7 +31,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster # <-- ADDED StaticTransformBroadcaster
 import tf_transformations
 
 from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
@@ -47,8 +47,8 @@ ARUCO_IDS = {
 }
 
 ARUCO_MARKER_SIZES = {
-    "phone": 50.0,   # mm
-    "estop": 32.0,  # mm
+    "phone": 37.0,   # mm
+    "estop": 20.0,  # mm
 }
 
 # ==============================================================================
@@ -112,12 +112,18 @@ class CombinedPoseEstimatorROS2(Node):
         # Initialize ROS2 node
         super().__init__('pose_estimator_node')
         
-        # TF Broadcaster
+        # TF Broadcasters
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.camera_frame = "camera_link"
+        self.static_broadcaster = StaticTransformBroadcaster(self) # <-- INITIALIZE STATIC BROADCASTER
+        self.camera_frame = "camera_link_g4"
+        self.world_frame = "world" # <-- DEFINE WORLD FRAME
+        
+        # PUBLISH STATIC TRANSFORM FROM WORLD TO CAMERA_LINK
+        self._publish_static_transform()
         
         self.get_logger().info("="*60)
         self.get_logger().info("ROS2 Pose Estimator Node Started")
+        self.get_logger().info("INDEPENDENT ARUCO DETECTION ENABLED")
         self.get_logger().info("="*60)
         
         # GStreamer pipeline for RPi CSI Camera
@@ -230,6 +236,31 @@ class CombinedPoseEstimatorROS2(Node):
         self.orb = cv2.ORB_create(nfeatures=2000, fastThreshold=12)
         self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         self.get_logger().info(f"✓ ORB initialized (2000 features)")
+
+    # --- NEW METHOD TO PUBLISH STATIC TRANSFORM ---
+    def _publish_static_transform(self):
+        """Publish a static transform from 'world' to 'camera_link'."""
+        t = TransformStamped()
+        
+        # Header
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.world_frame # Parent frame (often the RViz Fixed Frame)
+        t.child_frame_id = self.camera_frame # Child frame (your camera)
+        
+        # Set to zero transform (camera_link at world origin)
+        t.transform.translation.x = 0.0
+        t.transform.translation.y = 0.0
+        t.transform.translation.z = 0.0
+        
+        # Identity rotation (no rotation relative to world)
+        t.transform.rotation.w = 1.0 
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = 0.0
+        t.transform.rotation.z = 0.0
+        
+        self.static_broadcaster.sendTransform(t)
+        self.get_logger().info(f"✓ Published static transform: {self.world_frame} -> {self.camera_frame}")
+    # ---------------------------------------------
 
     def publish_tf(self, obj_name, rvec, tvec):
         """Publish TF transform for an object"""
@@ -488,36 +519,30 @@ class CombinedPoseEstimatorROS2(Node):
 
     # ========== ARUCO METHODS ==========
     
-    def detect_aruco_in_roi(self, frame, bbox):
-        """Detect ArUco in ROI"""
-        x1, y1, x2, y2 = bbox
-        
-        pad = 20
-        h, w = frame.shape[:2]
-        x1 = max(0, x1 - pad)
-        y1 = max(0, y1 - pad)
-        x2 = min(w, x2 + pad)
-        y2 = min(h, y2 + pad)
-        
-        roi = frame[y1:y2, x1:x2]
-        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    def detect_aruco_independent(self, frame):
+        """Detect all ArUco markers in entire frame (independent of YOLO)"""
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         if self.use_new_aruco_api:
-            corners, ids, rejected = self.aruco_detector.detectMarkers(gray_roi)
+            corners, ids, rejected = self.aruco_detector.detectMarkers(gray_frame)
         else:
-            corners, ids, rejected = cv2.aruco.detectMarkers(gray_roi, self.aruco_dict, parameters=self.aruco_params)
+            corners, ids, rejected = cv2.aruco.detectMarkers(
+                gray_frame, self.aruco_dict, parameters=self.aruco_params)
         
         if ids is None or len(ids) == 0:
-            return None, None
+            return {}
         
-        corners_frame = []
-        for corner_set in corners:
-            corner_adjusted = corner_set.copy()
-            corner_adjusted[0, :, 0] += x1
-            corner_adjusted[0, :, 1] += y1
-            corners_frame.append(corner_adjusted)
+        # Build dictionary of detected ArUco objects
+        detections = {}
+        for obj_name, state in self.targets.items():
+            if state["method"] != "aruco":
+                continue
+            target_id = state["aruco_id"]
+            if target_id in ids.flatten():
+                idx = np.where(ids.flatten() == target_id)[0][0]
+                detections[obj_name] = corners[idx][0]
         
-        return corners_frame, ids.flatten()
+        return detections
 
     # ========== POSE ESTIMATION ==========
     
@@ -563,8 +588,12 @@ class CombinedPoseEstimatorROS2(Node):
 
     # ========== DRAWING ==========
     
-    def draw_detection_box(self, frame, obj_name, bbox):
-        """Draw YOLO detection box"""
+    def draw_detection_box(self, frame, obj_name, bbox, confidence):
+        """Draw YOLO detection box (only if confidence > 60%)"""
+        # Only draw if confidence is above threshold
+        if confidence < 0.60:
+            return frame
+            
         x1, y1, x2, y2 = bbox
         state = self.targets[obj_name]
         
@@ -574,7 +603,10 @@ class CombinedPoseEstimatorROS2(Node):
             color = (0, 255, 0)
         
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, f"{obj_name} ({state['method']})", (x1, y1-10),
+        
+        # Show confidence in the label
+        label = f"{obj_name} ({state['method']}) {confidence:.2f}"
+        cv2.putText(frame, label, (x1, y1-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         return frame
 
@@ -627,7 +659,7 @@ class CombinedPoseEstimatorROS2(Node):
         """Main loop"""
         self.get_logger().info("\n" + "="*60)
         self.get_logger().info("COMBINED POSE ESTIMATION SYSTEM + ROS2 TF")
-        self.get_logger().info("5 Objects: 3 Homography + 2 ArUco")
+        self.get_logger().info("5 Objects: 3 Homography + 2 ArUco (INDEPENDENT)")
         self.get_logger().info("="*60)
         self.get_logger().info("\nControls:")
         self.get_logger().info("  'r' - Reset homography calibrations")
@@ -686,88 +718,117 @@ class CombinedPoseEstimatorROS2(Node):
                     bboxes = self.last_bboxes
                     confidences = self.last_confidences
                 
+                # INDEPENDENT ARUCO DETECTION (not reliant on YOLO bboxes)
+                aruco_detections = self.detect_aruco_independent(frame)
+                
+                # Optionally draw YOLO bboxes for ArUco objects (if detected with high confidence)
+                for obj_name in self.targets:
+                    if self.targets[obj_name]["method"] == "aruco":
+                        bbox = bboxes.get(obj_name)
+                        if bbox is not None:
+                            conf = confidences.get(obj_name, 0.0)
+                            display_frame = self.draw_detection_box(display_frame, obj_name, bbox, conf)
+                
                 y_info_offset = 30
                 tracked_count = 0
                 
-                # Process each detected object
+                # Process homography objects (requires YOLO detection)
                 for obj_name, bbox in bboxes.items():
+                    state = self.targets[obj_name]
+                    
+                    # Skip ArUco objects here - they're handled independently below
+                    if state["method"] == "aruco":
+                        continue
+                    
                     if bbox is None:
                         continue
-                        
-                    state = self.targets[obj_name]
-                    display_frame = self.draw_detection_box(display_frame, obj_name, bbox)
+                    
+                    # Draw bbox only if confidence > 60%
+                    conf = confidences.get(obj_name, 0.0)
+                    display_frame = self.draw_detection_box(display_frame, obj_name, bbox, conf)
                     
                     # === HOMOGRAPHY PATH ===
-                    if state["method"] == "homography":
-                        if not state.get("calibrated"):
-                            conf = confidences.get(obj_name, 0.0)
-                            
-                            buffer_size = len(state.get("calib_buffer", []))
-                            required = state.get("calib_buffer_size", 3)
-                            
-                            if buffer_size > 0:
-                                cv2.putText(display_frame, f"{obj_name}: CALIBRATING {buffer_size}/{required}", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                                y_info_offset += 30
-                                cv2.putText(display_frame, "HOLD OBJECT STEADY!", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                                y_info_offset += 35
-                            elif self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
-                                cv2.putText(display_frame, f"{obj_name}: Ready to calibrate", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                                y_info_offset += 30
+                    if not state.get("calibrated"):
+                        conf = confidences.get(obj_name, 0.0)
+                        
+                        buffer_size = len(state.get("calib_buffer", []))
+                        required = state.get("calib_buffer_size", 3)
+                        
+                        if buffer_size > 0:
+                            cv2.putText(display_frame, f"{obj_name}: CALIBRATING {buffer_size}/{required}", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                            y_info_offset += 30
+                            cv2.putText(display_frame, "HOLD OBJECT STEADY!", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                            y_info_offset += 35
+                        elif self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
+                            cv2.putText(display_frame, f"{obj_name}: Ready to calibrate", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            y_info_offset += 30
+                        else:
+                            reason = ""
+                            if conf < 0.75:
+                                reason = f"Low conf: {conf:.2f} < 0.75"
                             else:
-                                reason = ""
-                                if conf < 0.75:
-                                    reason = f"Low conf: {conf:.2f} < 0.75"
+                                x1, y1, x2, y2 = bbox
+                                area = (x2 - x1) * (y2 - y1)
+                                frame_area = frame.shape[0] * frame.shape[1]
+                                area_ratio = area / frame_area
+                                if area_ratio < 0.08:
+                                    reason = f"Too small: {area_ratio*100:.1f}% < 8%"
                                 else:
-                                    x1, y1, x2, y2 = bbox
-                                    area = (x2 - x1) * (y2 - y1)
-                                    frame_area = frame.shape[0] * frame.shape[1]
-                                    area_ratio = area / frame_area
-                                    if area_ratio < 0.08:
-                                        reason = f"Too small: {area_ratio*100:.1f}% < 8%"
-                                    else:
-                                        reason = "Bad position/aspect"
-                                
-                                cv2.putText(display_frame, f"{obj_name}: NOT READY - {reason}", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
-                                y_info_offset += 25
+                                    reason = "Bad position/aspect"
                             
-                            if self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
-                                self.accumulate_and_maybe_calibrate(frame, obj_name, bbox)
-                            continue
+                            cv2.putText(display_frame, f"{obj_name}: NOT READY - {reason}", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+                            y_info_offset += 25
                         
-                        corners = self.track_object_homography(frame, obj_name, bbox)
-                        if corners is None:
-                            continue
-                            
-                        rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
-                        if rvec_raw is None:
-                            continue
+                        if self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
+                            self.accumulate_and_maybe_calibrate(frame, obj_name, bbox)
+                        continue
                     
-                    # === ARUCO PATH ===
-                    elif state["method"] == "aruco":
-                        aruco_corners, aruco_ids = self.detect_aruco_in_roi(frame, bbox)
-                        if aruco_corners is None or aruco_ids is None:
-                            continue
+                    corners = self.track_object_homography(frame, obj_name, bbox)
+                    if corners is None:
+                        continue
                         
-                        target_id = state["aruco_id"]
-                        if target_id not in aruco_ids:
-                            continue
-                        
-                        idx = np.where(aruco_ids == target_id)[0][0]
-                        corners = aruco_corners[idx][0]
-                        
-                        rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
-                        if rvec_raw is None:
-                            continue
+                    rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
+                    if rvec_raw is None:
+                        continue
                     
-                    # === COMMON: EMA SMOOTHING ===
+                    # === EMA SMOOTHING ===
+                    alpha = state["ema_alpha"]
+                    if state["rvec_smooth"] is None:
+                        state["rvec_smooth"] = rvec_raw.copy()
+                        state["tvec_smooth"] = tvec_raw.copy()
+                    else:
+                        state["rvec_smooth"] = (1 - alpha) * state["rvec_smooth"] + alpha * rvec_raw
+                        state["tvec_smooth"] = (1 - alpha) * state["tvec_smooth"] + alpha * tvec_raw
+                    
+                    rvec_final = state["rvec_smooth"]
+                    tvec_final = state["tvec_smooth"]
+                    
+                    # === PUBLISH TF ===
+                    self.publish_tf(obj_name, rvec_final, tvec_final)
+                    
+                    # === DRAW ===
+                    display_frame = self.draw_tracked_corners(display_frame, obj_name, corners)
+                    display_frame = self.draw_3d_axes(display_frame, obj_name, rvec_final, tvec_final)
+                    y_info_offset = self.draw_pose_info(display_frame, obj_name, y_info_offset, rvec_final, tvec_final)
+                    tracked_count += 1
+                
+                # Process ArUco objects (INDEPENDENT - no YOLO needed)
+                for obj_name, corners in aruco_detections.items():
+                    state = self.targets[obj_name]
+                    
+                    rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
+                    if rvec_raw is None:
+                        continue
+                    
+                    # === EMA SMOOTHING ===
                     alpha = state["ema_alpha"]
                     if state["rvec_smooth"] is None:
                         state["rvec_smooth"] = rvec_raw.copy()
@@ -838,6 +899,7 @@ def main():
     
     print("\n" + "="*60)
     print("COMBINED POSE ESTIMATION SETUP + ROS2")
+    print("INDEPENDENT ARUCO DETECTION ENABLED")
     print("="*60)
     print("✓ Camera calibration from camera_params.py")
     
@@ -852,7 +914,7 @@ def main():
         if method == "homography":
             print(f"→ {obj_name}: {state['width_mm']}x{state['height_mm']}mm ({method})")
         else:
-            print(f"→ {obj_name}: ArUco ID {state['aruco_id']}, {state['marker_size_mm']}mm ({method})")
+            print(f"→ {obj_name}: ArUco ID {state['aruco_id']}, {state['marker_size_mm']}mm ({method} - INDEPENDENT)")
     print("="*60 + "\n")
 
     try:
