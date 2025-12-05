@@ -1,14 +1,39 @@
+#!/usr/bin/env python3
 """
-Combined Pose Estimation System
+Combined Pose Estimation System with ROS2 TF Broadcasting
 Tracks all 5 objects using both Homography and ArUco methods
 - Homography: card_game, circuit_board, notebook
-- ArUco: estop, phone
+- ArUco: phone, estop (INDEPENDENT DETECTION - not reliant on YOLO)
+- Publishes TF transforms to ROS2
+- Uses Raspberry Pi CSI Camera via GStreamer
 """
+
+import os
+# RPI CSI: Set environment variables
+os.environ["PYTHONNOUSERSITE"] = "1"
+os.environ["GST_PLUGIN_PATH"] = "/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:" + os.environ.get("GST_PLUGIN_PATH", "")
+
+if "DISPLAY" not in os.environ:
+    print("WARN: No DISPLAY variable found. Defaulting to physical display :0")
+    os.environ["DISPLAY"] = ":0"
+
+import gi
+# RPI CSI: GI requirements
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
 import time
+
+# ROS2 imports
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import TransformBroadcaster
+import tf_transformations
+
 from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
 
 # ==============================================================================
@@ -82,31 +107,45 @@ OBJECT_CONFIGS = {
 # ==============================================================================
 
 
-class CombinedPoseEstimator:
+class CombinedPoseEstimatorROS2(Node):
     def __init__(self, yolo_model_path, camera_index=1):
-        self.cap = None
+        # Initialize ROS2 node
+        super().__init__('pose_estimator_node')
+        
+        # TF Broadcaster
+        self.tf_broadcaster = TransformBroadcaster(self)
+        self.camera_frame = "camera_link"
+        
+        self.get_logger().info("="*60)
+        self.get_logger().info("ROS2 Pose Estimator Node Started")
+        self.get_logger().info("INDEPENDENT ARUCO DETECTION ENABLED")
+        self.get_logger().info("="*60)
+        
+        # GStreamer pipeline for RPi CSI Camera
+        self.pipeline = None
+        self.sink = None
         self.camera_index = camera_index
 
         # Load YOLO model
-        print(f"Loading YOLO model: {yolo_model_path}")
+        self.get_logger().info(f"Loading YOLO model: {yolo_model_path}")
         self.yolo_model = YOLO(yolo_model_path)
         self.yolo_model.fuse()
         
         self.yolo_imgsz = 384
         self.class_names = self.yolo_model.names
-        print(f"Model loaded with classes: {list(self.class_names.values())}")
+        self.get_logger().info(f"Model loaded with classes: {list(self.class_names.values())}")
 
-        # ArUco detector - compatible with both old and new OpenCV
+        # ArUco detector
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
         self.aruco_params = cv2.aruco.DetectorParameters()
         
         try:
             self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
             self.use_new_aruco_api = True
-            print(f"✓ ArUco detector initialized (new API)")
+            self.get_logger().info(f"✓ ArUco detector initialized (new API)")
         except AttributeError:
             self.use_new_aruco_api = False
-            print(f"✓ ArUco detector initialized (legacy API)")
+            self.get_logger().info(f"✓ ArUco detector initialized (legacy API)")
 
         # Frame skipping
         self.frame_idx = 0
@@ -128,9 +167,9 @@ class CombinedPoseEstimator:
                 None,
             )
             if class_id is None:
-                print(f"WARNING: '{obj_name}' class not found in model!")
+                self.get_logger().warn(f"'{obj_name}' class not found in model!")
             else:
-                print(f"✓ {obj_name.capitalize()} class found: ID={class_id} ({cfg['method']})")
+                self.get_logger().info(f"✓ {obj_name.capitalize()} class found: ID={class_id} ({cfg['method']})")
 
             state = {
                 "class_id": class_id,
@@ -186,34 +225,80 @@ class CombinedPoseEstimator:
         # Camera parameters
         self.camera_matrix = CAMERA_MATRIX
         self.dist_coeffs = DIST_COEFFS
-        print("✓ Loaded camera parameters from camera_params.py")
+        self.get_logger().info("✓ Loaded camera parameters from camera_params.py")
 
         # ORB for homography objects
         self.orb = cv2.ORB_create(nfeatures=2000, fastThreshold=12)
         self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        print(f"✓ ORB initialized (2000 features)")
+        self.get_logger().info(f"✓ ORB initialized (2000 features)")
+
+    def publish_tf(self, obj_name, rvec, tvec):
+        """Publish TF transform for an object"""
+        t = TransformStamped()
+        
+        # Header
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.camera_frame
+        t.child_frame_id = f"{obj_name}_frame"
+        
+        # Translation (convert mm to meters)
+        t.transform.translation.x = float(tvec[0, 0]) / 1000.0
+        t.transform.translation.y = float(tvec[1, 0]) / 1000.0
+        t.transform.translation.z = float(tvec[2, 0]) / 1000.0
+        
+        # Rotation (convert rotation vector to quaternion)
+        rotation_matrix, _ = cv2.Rodrigues(rvec)
+        quaternion = tf_transformations.quaternion_from_matrix(
+            np.vstack([np.hstack([rotation_matrix, [[0], [0], [0]]]), [0, 0, 0, 1]])
+        )
+        
+        t.transform.rotation.x = quaternion[0]
+        t.transform.rotation.y = quaternion[1]
+        t.transform.rotation.z = quaternion[2]
+        t.transform.rotation.w = quaternion[3]
+        
+        # Broadcast transform
+        self.tf_broadcaster.sendTransform(t)
 
     def start_camera(self):
-        """Start webcam"""
-        print(f"Starting webcam (index {self.camera_index})...")
-        self.cap = cv2.VideoCapture(self.camera_index)
-        
-        if not self.cap.isOpened():
-            print(f"ERROR: Cannot open camera {self.camera_index}")
+        """Start Raspberry Pi CSI Camera via GStreamer"""
+        self.get_logger().info(f"Starting Raspberry Pi CSI Camera via GStreamer/libcamera...")
+        Gst.init(None)
+        gst_str = (
+            "libcamerasrc ! "
+            "video/x-raw,width=640,height=480,format=NV12,framerate=30/1 ! "
+            "videoconvert ! video/x-raw,format=BGR ! "
+            "appsink name=sink emit-signals=true max-buffers=2 drop=true"
+        )
+        try:
+            self.pipeline = Gst.parse_launch(gst_str)
+            self.sink = self.pipeline.get_by_name("sink")
+            self.pipeline.set_state(Gst.State.PLAYING)
+            self.get_logger().info(f"✓ GStreamer pipeline STARTED: 640x480")
+            return True
+        except Exception as e:
+            self.get_logger().error(f"Cannot start GStreamer pipeline: {e}")
             return False
-        
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        print(f"✓ Webcam started: 640x480")
-        return True
 
-    def pull_frame(self):
-        """Read frame from webcam"""
-        if self.cap is None:
+    def pull_frame(self, timeout_ns=10_000_000):
+        """Read frame from GStreamer pipeline"""
+        if self.sink is None:
             return None
-        ret, frame = self.cap.read()
-        return frame if ret else None
+        sample = self.sink.emit("try-pull-sample", timeout_ns)
+        if sample is None:
+            return None
+        buf = sample.get_buffer()
+        caps = sample.get_caps().get_structure(0)
+        w = caps.get_value("width")
+        h = caps.get_value("height")
+        ok, mapinfo = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return None
+        try:
+            frame = np.frombuffer(mapinfo.data, dtype=np.uint8).reshape(h, w, 3)
+            return frame.copy()
+        finally:
+            buf.unmap(mapinfo)
 
     def detect_objects(self, frame):
         """Run YOLO detection"""
@@ -245,9 +330,9 @@ class CombinedPoseEstimator:
     def calibrate_reference(self, frame, obj_name, bbox):
         """Calibrate reference for homography object"""
         state = self.targets[obj_name]
-        print(f"\n{'='*60}")
-        print(f"CALIBRATING: {obj_name.upper()}")
-        print('='*60)
+        self.get_logger().info(f"\n{'='*60}")
+        self.get_logger().info(f"CALIBRATING: {obj_name.upper()}")
+        self.get_logger().info('='*60)
 
         x1, y1, x2, y2 = bbox
         
@@ -262,7 +347,7 @@ class CombinedPoseEstimator:
         )
 
         if state["ref_descriptors"] is None or len(state["ref_keypoints"]) < 10:
-            print("ERROR: Not enough features! Retrying...")
+            self.get_logger().warn("Not enough features! Retrying...")
             state["calibrated"] = False
             return False
 
@@ -270,15 +355,14 @@ class CombinedPoseEstimator:
         state["tvec_smooth"] = None
         state["calibrated"] = True
         
-        print(f"✓ Detected {len(state['ref_keypoints'])} features")
-        print(f"✓ CALIBRATION COMPLETE for {obj_name.upper()}!")
-        print('='*60 + '\n')
+        self.get_logger().info(f"✓ Detected {len(state['ref_keypoints'])} features")
+        self.get_logger().info(f"✓ CALIBRATION COMPLETE for {obj_name.upper()}!")
+        self.get_logger().info('='*60 + '\n')
         return True
 
     def should_auto_calibrate(self, obj_name, bbox, confidence, frame_shape):
         """Check if suitable for calibration - STRICT CONDITIONS"""
-        # STRICT: High confidence required
-        if confidence < 0.75:  # Was 0.5, now much stricter
+        if confidence < 0.75:
             return False
 
         x1, y1, x2, y2 = bbox
@@ -287,19 +371,16 @@ class CombinedPoseEstimator:
         area = w * h
         frame_area = W * H
 
-        # STRICT: Object must fill significant portion of frame
         area_ratio = area / frame_area
-        if area_ratio < 0.08:  # At least 8% of frame (was 1.5-2%)
+        if area_ratio < 0.08:
             return False
         
-        # STRICT: Object shouldn't be too close to edges
         margin = 30
         if x1 < margin or y1 < margin or x2 > (W - margin) or y2 > (H - margin):
             return False
         
-        # STRICT: Reasonable aspect ratio (not too stretched)
         aspect = max(w, h) / min(w, h)
-        if aspect > 3.0:  # Too elongated
+        if aspect > 3.0:
             return False
 
         return True
@@ -309,15 +390,13 @@ class CombinedPoseEstimator:
         state = self.targets[obj_name]
         x1, y1, x2, y2 = bbox
         
-        # Check if bbox is stable (hasn't moved much from last buffer)
         if len(state["calib_buffer"]) > 0:
             last_bbox = state["calib_buffer"][-1]["bbox"]
             dx = abs((x1 + x2) / 2 - (last_bbox[0] + last_bbox[2]) / 2)
             dy = abs((y1 + y2) / 2 - (last_bbox[1] + last_bbox[3]) / 2)
             
-            # If moved more than 20 pixels, reset buffer (not stable)
             if dx > 20 or dy > 20:
-                print(f"Movement detected for {obj_name} - resetting calibration buffer")
+                self.get_logger().info(f"Movement detected for {obj_name} - resetting calibration buffer")
                 state["calib_buffer"].clear()
                 return False
         
@@ -335,7 +414,7 @@ class CombinedPoseEstimator:
         })
 
         if len(state["calib_buffer"]) < state["calib_buffer_size"]:
-            print(f"Calibration buffer for {obj_name}: {len(state['calib_buffer'])}/{state['calib_buffer_size']} "
+            self.get_logger().info(f"Calibration buffer for {obj_name}: {len(state['calib_buffer'])}/{state['calib_buffer_size']} "
                   f"(keypoints: {len(keypoints)}) - HOLD STEADY!")
             return False
 
@@ -370,7 +449,6 @@ class CombinedPoseEstimator:
         keypoints, descriptors = self.orb.detectAndCompute(gray_roi, None)
 
         if descriptors is None or len(keypoints) < 10:
-            print(f"[{obj_name}] ✗ Not enough keypoints")
             return None
 
         matches = self.bf_matcher.knnMatch(state["ref_descriptors"], descriptors, k=2)
@@ -383,11 +461,7 @@ class CombinedPoseEstimator:
             if m.distance < 0.75 * n.distance:
                 good_matches.append(m)
 
-        print(f"[{obj_name}] kp_ref={len(state['ref_keypoints'])}, "
-              f"kp_roi={len(keypoints)}, good={len(good_matches)}, min={min_matches}")
-
         if len(good_matches) < min_matches:
-            print(f"[{obj_name}] ✗ Not enough matches")
             return None
 
         src_pts = np.float32([state["ref_keypoints"][m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
@@ -395,16 +469,12 @@ class CombinedPoseEstimator:
 
         H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 6.0)
         if H is None or mask is None:
-            print(f"[{obj_name}] ✗ RANSAC failed")
             return None
 
         inliers = mask.ravel().tolist()
         inlier_ratio = sum(inliers) / len(inliers)
         
-        print(f"[{obj_name}] inlier_ratio={inlier_ratio:.2f}, min={min_inlier_ratio}")
-        
         if inlier_ratio < min_inlier_ratio:
-            print(f"[{obj_name}] ✗ Inlier ratio too low")
             return None
 
         h_ref, w_ref = state["ref_image"].shape
@@ -415,41 +485,34 @@ class CombinedPoseEstimator:
         corners_frame[:, 0] += x1
         corners_frame[:, 1] += y1
 
-        print(f"[{obj_name}] ✓ Homography SUCCESS")
         return corners_frame
 
     # ========== ARUCO METHODS ==========
     
-    def detect_aruco_in_roi(self, frame, bbox):
-        """Detect ArUco in ROI"""
-        x1, y1, x2, y2 = bbox
-        
-        pad = 20
-        h, w = frame.shape[:2]
-        x1 = max(0, x1 - pad)
-        y1 = max(0, y1 - pad)
-        x2 = min(w, x2 + pad)
-        y2 = min(h, y2 + pad)
-        
-        roi = frame[y1:y2, x1:x2]
-        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    def detect_aruco_independent(self, frame):
+        """Detect all ArUco markers in entire frame (independent of YOLO)"""
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         if self.use_new_aruco_api:
-            corners, ids, rejected = self.aruco_detector.detectMarkers(gray_roi)
+            corners, ids, rejected = self.aruco_detector.detectMarkers(gray_frame)
         else:
-            corners, ids, rejected = cv2.aruco.detectMarkers(gray_roi, self.aruco_dict, parameters=self.aruco_params)
+            corners, ids, rejected = cv2.aruco.detectMarkers(
+                gray_frame, self.aruco_dict, parameters=self.aruco_params)
         
         if ids is None or len(ids) == 0:
-            return None, None
+            return {}
         
-        corners_frame = []
-        for corner_set in corners:
-            corner_adjusted = corner_set.copy()
-            corner_adjusted[0, :, 0] += x1
-            corner_adjusted[0, :, 1] += y1
-            corners_frame.append(corner_adjusted)
+        # Build dictionary of detected ArUco objects
+        detections = {}
+        for obj_name, state in self.targets.items():
+            if state["method"] != "aruco":
+                continue
+            target_id = state["aruco_id"]
+            if target_id in ids.flatten():
+                idx = np.where(ids.flatten() == target_id)[0][0]
+                detections[obj_name] = corners[idx][0]
         
-        return corners_frame, ids.flatten()
+        return detections
 
     # ========== POSE ESTIMATION ==========
     
@@ -557,15 +620,15 @@ class CombinedPoseEstimator:
     
     def run(self):
         """Main loop"""
-        print("\n" + "="*60)
-        print("COMBINED POSE ESTIMATION SYSTEM")
-        print("5 Objects: 3 Homography + 2 ArUco")
-        print("="*60)
-        print("\nControls:")
-        print("  'r' - Reset homography calibrations")
-        print("  's' - Save frame")
-        print("  ESC - Exit")
-        print("="*60 + "\n")
+        self.get_logger().info("\n" + "="*60)
+        self.get_logger().info("COMBINED POSE ESTIMATION SYSTEM + ROS2 TF")
+        self.get_logger().info("5 Objects: 3 Homography + 2 ArUco (INDEPENDENT)")
+        self.get_logger().info("="*60)
+        self.get_logger().info("\nControls:")
+        self.get_logger().info("  'r' - Reset homography calibrations")
+        self.get_logger().info("  's' - Save frame")
+        self.get_logger().info("  ESC - Exit")
+        self.get_logger().info("="*60 + "\n")
         
         if not self.start_camera():
             return
@@ -576,7 +639,7 @@ class CombinedPoseEstimator:
         last_time = time.time()
         
         try:
-            while True:
+            while rclpy.ok():
                 frame = self.pull_frame()
                 if frame is None:
                     if cv2.waitKey(1) & 0xFF == 27:
@@ -618,92 +681,78 @@ class CombinedPoseEstimator:
                     bboxes = self.last_bboxes
                     confidences = self.last_confidences
                 
+                # INDEPENDENT ARUCO DETECTION (not reliant on YOLO bboxes)
+                aruco_detections = self.detect_aruco_independent(frame)
+                
                 y_info_offset = 30
                 tracked_count = 0
                 
-                # Process each detected object
+                # Process homography objects (requires YOLO detection)
                 for obj_name, bbox in bboxes.items():
+                    state = self.targets[obj_name]
+                    
+                    # Skip ArUco objects here - they're handled independently below
+                    if state["method"] == "aruco":
+                        continue
+                    
                     if bbox is None:
                         continue
                         
-                    state = self.targets[obj_name]
                     display_frame = self.draw_detection_box(display_frame, obj_name, bbox)
                     
                     # === HOMOGRAPHY PATH ===
-                    if state["method"] == "homography":
-                        if not state.get("calibrated"):
-                            conf = confidences.get(obj_name, 0.0)
-                            
-                            # Show calibration status on screen
-                            buffer_size = len(state.get("calib_buffer", []))
-                            required = state.get("calib_buffer_size", 3)
-                            
-                            if buffer_size > 0:
-                                # Currently buffering - show progress
-                                cv2.putText(display_frame, f"{obj_name}: CALIBRATING {buffer_size}/{required}", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                                y_info_offset += 30
-                                cv2.putText(display_frame, "HOLD OBJECT STEADY!", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                                y_info_offset += 35
-                            elif self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
-                                # Ready to start calibrating
-                                cv2.putText(display_frame, f"{obj_name}: Ready to calibrate", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                                y_info_offset += 30
+                    if not state.get("calibrated"):
+                        conf = confidences.get(obj_name, 0.0)
+                        
+                        buffer_size = len(state.get("calib_buffer", []))
+                        required = state.get("calib_buffer_size", 3)
+                        
+                        if buffer_size > 0:
+                            cv2.putText(display_frame, f"{obj_name}: CALIBRATING {buffer_size}/{required}", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                            y_info_offset += 30
+                            cv2.putText(display_frame, "HOLD OBJECT STEADY!", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                            y_info_offset += 35
+                        elif self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
+                            cv2.putText(display_frame, f"{obj_name}: Ready to calibrate", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            y_info_offset += 30
+                        else:
+                            reason = ""
+                            if conf < 0.75:
+                                reason = f"Low conf: {conf:.2f} < 0.75"
                             else:
-                                # Not suitable for calibration - show why
-                                reason = ""
-                                if conf < 0.75:
-                                    reason = f"Low conf: {conf:.2f} < 0.75"
+                                x1, y1, x2, y2 = bbox
+                                area = (x2 - x1) * (y2 - y1)
+                                frame_area = frame.shape[0] * frame.shape[1]
+                                area_ratio = area / frame_area
+                                if area_ratio < 0.08:
+                                    reason = f"Too small: {area_ratio*100:.1f}% < 8%"
                                 else:
-                                    x1, y1, x2, y2 = bbox
-                                    area = (x2 - x1) * (y2 - y1)
-                                    frame_area = frame.shape[0] * frame.shape[1]
-                                    area_ratio = area / frame_area
-                                    if area_ratio < 0.08:
-                                        reason = f"Too small: {area_ratio*100:.1f}% < 8%"
-                                    else:
-                                        reason = "Bad position/aspect"
-                                
-                                cv2.putText(display_frame, f"{obj_name}: NOT READY - {reason}", 
-                                          (10, y_info_offset),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
-                                y_info_offset += 25
+                                    reason = "Bad position/aspect"
                             
-                            if self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
-                                self.accumulate_and_maybe_calibrate(frame, obj_name, bbox)
-                            continue
+                            cv2.putText(display_frame, f"{obj_name}: NOT READY - {reason}", 
+                                      (10, y_info_offset),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+                            y_info_offset += 25
                         
-                        corners = self.track_object_homography(frame, obj_name, bbox)
-                        if corners is None:
-                            continue
-                            
-                        rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
-                        if rvec_raw is None:
-                            continue
+                        if self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
+                            self.accumulate_and_maybe_calibrate(frame, obj_name, bbox)
+                        continue
                     
-                    # === ARUCO PATH ===
-                    elif state["method"] == "aruco":
-                        aruco_corners, aruco_ids = self.detect_aruco_in_roi(frame, bbox)
-                        if aruco_corners is None or aruco_ids is None:
-                            continue
+                    corners = self.track_object_homography(frame, obj_name, bbox)
+                    if corners is None:
+                        continue
                         
-                        target_id = state["aruco_id"]
-                        if target_id not in aruco_ids:
-                            continue
-                        
-                        idx = np.where(aruco_ids == target_id)[0][0]
-                        corners = aruco_corners[idx][0]
-                        
-                        rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
-                        if rvec_raw is None:
-                            continue
+                    rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
+                    if rvec_raw is None:
+                        continue
                     
-                    # === COMMON: EMA SMOOTHING ===
+                    # === EMA SMOOTHING ===
                     alpha = state["ema_alpha"]
                     if state["rvec_smooth"] is None:
                         state["rvec_smooth"] = rvec_raw.copy()
@@ -714,6 +763,38 @@ class CombinedPoseEstimator:
                     
                     rvec_final = state["rvec_smooth"]
                     tvec_final = state["tvec_smooth"]
+                    
+                    # === PUBLISH TF ===
+                    self.publish_tf(obj_name, rvec_final, tvec_final)
+                    
+                    # === DRAW ===
+                    display_frame = self.draw_tracked_corners(display_frame, obj_name, corners)
+                    display_frame = self.draw_3d_axes(display_frame, obj_name, rvec_final, tvec_final)
+                    y_info_offset = self.draw_pose_info(display_frame, obj_name, y_info_offset, rvec_final, tvec_final)
+                    tracked_count += 1
+                
+                # Process ArUco objects (INDEPENDENT - no YOLO needed)
+                for obj_name, corners in aruco_detections.items():
+                    state = self.targets[obj_name]
+                    
+                    rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
+                    if rvec_raw is None:
+                        continue
+                    
+                    # === EMA SMOOTHING ===
+                    alpha = state["ema_alpha"]
+                    if state["rvec_smooth"] is None:
+                        state["rvec_smooth"] = rvec_raw.copy()
+                        state["tvec_smooth"] = tvec_raw.copy()
+                    else:
+                        state["rvec_smooth"] = (1 - alpha) * state["rvec_smooth"] + alpha * rvec_raw
+                        state["tvec_smooth"] = (1 - alpha) * state["tvec_smooth"] + alpha * tvec_raw
+                    
+                    rvec_final = state["rvec_smooth"]
+                    tvec_final = state["tvec_smooth"]
+                    
+                    # === PUBLISH TF ===
+                    self.publish_tf(obj_name, rvec_final, tvec_final)
                     
                     # === DRAW ===
                     display_frame = self.draw_tracked_corners(display_frame, obj_name, corners)
@@ -726,17 +807,17 @@ class CombinedPoseEstimator:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 
                 if tracked_count > 0:
-                    cv2.putText(display_frame, f"TRACKING {tracked_count}/5 OBJECTS", 
+                    cv2.putText(display_frame, f"TRACKING {tracked_count}/5 | PUBLISHING TF", 
                                 (10, display_frame.shape[0]-20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
-                cv2.imshow('Combined Pose Estimation', display_frame)
+                cv2.imshow('Combined Pose Estimation + ROS2', display_frame)
                 
                 # Keys
                 key = cv2.waitKey(1) & 0xFF
                 
                 if key == 27:
-                    print("\nExiting...")
+                    self.get_logger().info("\nExiting...")
                     break
                 
                 elif key == ord('r'):
@@ -747,30 +828,38 @@ class CombinedPoseEstimator:
                             state["rvec_smooth"] = None
                             state["tvec_smooth"] = None
                             state["calib_buffer"].clear()
-                    print("✓ Homography calibrations reset")
+                    self.get_logger().info("✓ Homography calibrations reset")
                 
                 elif key == ord('s'):
                     filename = f"combined_result_{saved_count:03d}.jpg"
                     cv2.imwrite(filename, display_frame)
                     saved_count += 1
-                    print(f"✓ Saved: {filename}")
+                    self.get_logger().info(f"✓ Saved: {filename}")
+                
+                # Spin ROS2 callbacks
+                rclpy.spin_once(self, timeout_sec=0)
         
         finally:
-            if self.cap:
-                self.cap.release()
+            # Cleanup GStreamer pipeline
+            if self.pipeline:
+                self.pipeline.set_state(Gst.State.NULL)
             cv2.destroyAllWindows()
 
 
 def main():
+    # Initialize ROS2
+    rclpy.init()
+    
     print("\n" + "="*60)
-    print("COMBINED POSE ESTIMATION SETUP")
+    print("COMBINED POSE ESTIMATION SETUP + ROS2")
+    print("INDEPENDENT ARUCO DETECTION ENABLED")
     print("="*60)
     print("✓ Camera calibration from camera_params.py")
     
     yolo_model_path = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
     camera_index = 1
     
-    estimator = CombinedPoseEstimator(yolo_model_path, camera_index)
+    estimator = CombinedPoseEstimatorROS2(yolo_model_path, camera_index)
     
     print("\n--- Object Configurations ---")
     for obj_name, state in estimator.targets.items():
@@ -778,10 +867,16 @@ def main():
         if method == "homography":
             print(f"→ {obj_name}: {state['width_mm']}x{state['height_mm']}mm ({method})")
         else:
-            print(f"→ {obj_name}: ArUco ID {state['aruco_id']}, {state['marker_size_mm']}mm ({method})")
+            print(f"→ {obj_name}: ArUco ID {state['aruco_id']}, {state['marker_size_mm']}mm ({method} - INDEPENDENT)")
     print("="*60 + "\n")
 
-    estimator.run()
+    try:
+        estimator.run()
+    except KeyboardInterrupt:
+        print("\nShutdown requested by user")
+    finally:
+        estimator.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
