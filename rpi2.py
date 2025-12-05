@@ -206,6 +206,12 @@ class MultiObjectPoseEstimator:
         else:
             self.aruco_params = cv2.aruco.DetectorParameters()
 
+        # Create ArUco detector for newer OpenCV versions (4.7.0+)
+        if hasattr(cv2.aruco, "ArucoDetector"):
+            self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        else:
+            self.aruco_detector = None
+
         self.aruco_id_to_name = {v: k for k, v in ARUCO_IDS.items()}
         print("✓ ArUco dictionary and parameters initialized.")
 
@@ -492,9 +498,15 @@ class MultiObjectPoseEstimator:
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        corners_list, ids, _ = cv2.aruco.detectMarkers(
-            gray, self.aruco_dict, parameters=self.aruco_params
-        )
+        # Use new API if available, otherwise fall back to old API
+        if self.aruco_detector is not None:
+            # New API (OpenCV 4.7.0+)
+            corners_list, ids, _ = self.aruco_detector.detectMarkers(gray)
+        else:
+            # Old API (OpenCV < 4.7.0)
+            corners_list, ids, _ = cv2.aruco.detectMarkers(
+                gray, self.aruco_dict, parameters=self.aruco_params
+            )
 
         if ids is None or len(corners_list) == 0:
             return display_frame, y_offset_start, 0
