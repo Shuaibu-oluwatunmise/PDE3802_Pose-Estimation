@@ -8,6 +8,8 @@ Stabilized with Per-Object Thresholds (RANSAC, Homography Inlier Check, and EMA 
     - YOLO runs frequent (search mode) when acquiring objects.
     - YOLO runs infrequent (track mode) when objects are calibrated.                
 - Homography handles fine tracking in between YOLO updates.
+
+*** FIXED: ArUco API compatibility for OpenCV 4.7.0+ ***
 """
 
 import os
@@ -294,7 +296,6 @@ class MultiObjectPoseEstimator:
 
         return bboxes, best_conf
 
-    # ... (Calibration, Gate, Homography, PnP remain efficient and identical) ...                
     # ------------------------------------------------------------------
     # Calibration per object (single ROI)
     # ------------------------------------------------------------------
@@ -528,7 +529,6 @@ class MultiObjectPoseEstimator:
                 continue
 
             # Pose estimation - Handle API change
-            # New API doesn't have estimatePoseSingleMarkers, need to use solvePnP directly
             if hasattr(cv2.aruco, "estimatePoseSingleMarkers"):
                 # Old API
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
