@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Optimized Live Inference Script - Raspberry Pi CSI Camera Version
-Optimised for higher FPS on Raspberry Pi with 320x320 inference
+ULTRA-OPTIMIZED Live Inference - Raspberry Pi CSI Camera
+Maximum FPS configuration with aggressive optimizations
 """
 
 import os
 import time
 
-# ---------- CPU / threading env tweaks (helps on small CPUs) ----------
+# CPU / threading optimizations
 os.environ["PYTHONNOUSERSITE"] = "1"
 os.environ["GST_PLUGIN_PATH"] = "/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:" + os.environ.get("GST_PLUGIN_PATH", "")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 if "DISPLAY" not in os.environ:
     print("WARN: No DISPLAY variable found. Defaulting to physical display :0")
@@ -25,49 +26,67 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# Configuration
+# ============================================================
+#              ULTRA-PERFORMANCE CONFIGURATION
+# ============================================================
+
 MODEL_PATH = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
-CONF_THRESHOLD = 0.5
+CONF_THRESHOLD = 0.6  # Higher threshold = fewer detections = faster
 
-# *** PERFORMANCE TUNING PARAMETERS ***
-INFER_IMGSZ = 320        # Network input size (320x320 for speed, can try 256 if still slow)
-SKIP_EVERY_N_FRAMES = 1  # 1 = infer every frame, 2 = every other frame, etc.
-CAMERA_WIDTH = 640       # Camera capture width (can reduce to 320 for more speed)
-CAMERA_HEIGHT = 480      # Camera capture height (can reduce to 240 for more speed)
+# Network inference size (lower = MUCH faster)
+INFER_IMGSZ = 320  # Try: 320 (good balance) or 256 (maximum speed)
+
+# Frame skipping (higher = faster but less responsive)
+SKIP_EVERY_N_FRAMES = 2  # Process every 2nd frame (15 FPS inference from 30 FPS camera)
+
+# Camera resolution (lower = faster)
+CAMERA_WIDTH = 320   # Reduced from 640 for speed
+CAMERA_HEIGHT = 240  # Reduced from 480 for speed
+
+# Display optimizations
+SHOW_SIMPLE_BOXES = True  # Use simple boxes instead of YOLO's plot() for speed
+DISPLAY_SCALE = 1.0       # Scale display (>1.0 to enlarge small resolution)
+
+# ============================================================
 
 
-class RpiCameraInference:
+class UltraOptimizedInference:
     def __init__(self, model_path, conf_threshold=0.5):
         self.model_path = model_path
         self.conf_threshold = conf_threshold
         self.pipeline = None
         self.sink = None
-        self.last_results = None  # Store last results for frame skipping
+        self.last_boxes = []  # Store last detection boxes for frame skipping
 
-        # Load YOLO model
-        print("Loading model...")
+        print("Loading and optimizing model...")
         self.model = YOLO(model_path)
 
-        # Fuse model for faster inference (conv+bn fusion)
+        # Fuse model layers for speed
         try:
             self.model.fuse()
-            print("✓ Model fused for faster inference")
+            print("✓ Model fused")
         except Exception as e:
             print(f"Model fuse skipped: {e}")
 
-        print(f"✓ Model loaded! Classes: {self.model.names}")
+        self.class_names = self.model.names
+        self.colors = self._generate_colors()
+        print(f"✓ Model loaded! Classes: {self.class_names}")
+
+    def _generate_colors(self):
+        """Generate consistent colors for each class"""
+        np.random.seed(42)
+        return {i: tuple(map(int, np.random.randint(0, 255, 3))) 
+                for i in range(len(self.class_names))}
 
     def start_camera(self):
-        """Start Raspberry Pi CSI Camera via GStreamer/libcamera"""
-        print(f"Starting Raspberry Pi CSI Camera via GStreamer/libcamera...")
+        """Start camera with optimized pipeline"""
+        print(f"Starting camera with ultra-optimized pipeline...")
         Gst.init(None)
 
-        # GStreamer pipeline with optimized settings
         gst_str = (
             "libcamerasrc ! "
             f"video/x-raw,width={CAMERA_WIDTH},height={CAMERA_HEIGHT},format=NV12,framerate=30/1 ! "
             "videoconvert ! video/x-raw,format=BGR ! "
-            # More real-time friendly appsink config:
             "appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true"
         )
 
@@ -75,17 +94,14 @@ class RpiCameraInference:
             self.pipeline = Gst.parse_launch(gst_str)
             self.sink = self.pipeline.get_by_name("sink")
             self.pipeline.set_state(Gst.State.PLAYING)
-            print(f"✓ GStreamer pipeline STARTED: {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
-            print(f"✓ Inference size: {INFER_IMGSZ}x{INFER_IMGSZ}")
-            if SKIP_EVERY_N_FRAMES > 1:
-                print(f"✓ Frame skip enabled: processing every {SKIP_EVERY_N_FRAMES} frames")
+            print(f"✓ Camera started: {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
             return True
         except Exception as e:
-            print(f"ERROR: Cannot start GStreamer pipeline: {e}")
+            print(f"ERROR: {e}")
             return False
 
     def get_frame(self):
-        """Pull frame from GStreamer pipeline"""
+        """Pull frame from pipeline"""
         sample = self.sink.emit("pull-sample")
         if sample is None:
             return None
@@ -109,156 +125,140 @@ class RpiCameraInference:
         buf.unmap(mapinfo)
         return frame
 
+    def draw_simple_boxes(self, frame, boxes):
+        """Fast box drawing (cheaper than YOLO's plot())"""
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box['xyxy'])
+            cls = box['cls']
+            conf = box['conf']
+            
+            color = self.colors[cls]
+            
+            # Draw box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            
+            # Draw label
+            label = f"{self.class_names[cls]}: {conf:.2f}"
+            (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(frame, (x1, y1 - h - 4), (x1 + w, y1), color, -1)
+            cv2.putText(frame, label, (x1, y1 - 2), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        return frame
+
     def run(self):
-        """Run live inference with optimizations"""
+        """Main inference loop with all optimizations"""
         if not self.start_camera():
-            print("Failed to start camera!")
             return
 
-        print("\n" + "="*50)
-        print("Running optimized inference...")
-        print("Press 'q' to quit")
-        print("Press 's' to save current frame")
-        print("="*50 + "\n")
+        print("\n" + "="*60)
+        print("ULTRA-OPTIMIZED MODE")
+        print(f"Inference size: {INFER_IMGSZ}x{INFER_IMGSZ}")
+        print(f"Camera: {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
+        print(f"Frame skip: Every {SKIP_EVERY_N_FRAMES} frames")
+        print(f"Simple boxes: {SHOW_SIMPLE_BOXES}")
+        print("\nPress 'q' to quit | 's' to save frame")
+        print("="*60 + "\n")
 
-        frame_count = 0
+        frame_idx = 0
         inference_count = 0
         last_time = time.time()
         fps = 0.0
-        inference_fps = 0.0
-        avg_inference_time = 0.0
+        inf_fps = 0.0
+        avg_inf_time = 0.0
 
         try:
             while True:
                 frame = self.get_frame()
                 if frame is None:
-                    print("Failed to get frame")
                     break
 
-                frame_count += 1
+                frame_idx += 1
 
-                # --- Measure overall FPS ---
+                # FPS calculation
                 now = time.time()
-                elapsed = now - last_time
-                if elapsed >= 1.0:
-                    fps = frame_count / elapsed
-                    inference_fps = inference_count / elapsed
-                    last_time = now
-                    frame_count = 0
+                if now - last_time >= 1.0:
+                    fps = frame_idx / (now - last_time)
+                    inf_fps = inference_count / (now - last_time)
+                    frame_idx = 0
                     inference_count = 0
+                    last_time = now
 
-                # --- Frame skipping logic ---
-                should_infer = (SKIP_EVERY_N_FRAMES == 1) or (frame_count % SKIP_EVERY_N_FRAMES == 0)
+                # Determine if we should run inference
+                should_infer = (SKIP_EVERY_N_FRAMES == 1) or \
+                              (frame_idx % SKIP_EVERY_N_FRAMES == 0)
 
                 if should_infer:
-                    # --- Run inference with smaller network input size ---
-                    inference_start = time.time()
+                    # Run inference
+                    t0 = time.time()
                     results = self.model(
                         frame,
                         conf=self.conf_threshold,
-                        imgsz=INFER_IMGSZ,  # <<< KEY for speed: 320x320
+                        imgsz=INFER_IMGSZ,
                         verbose=False
                     )
-                    inference_time = (time.time() - inference_start) * 1000  # ms
+                    inf_time = (time.time() - t0) * 1000
                     
-                    # Update average inference time (simple moving average)
-                    if avg_inference_time == 0:
-                        avg_inference_time = inference_time
-                    else:
-                        avg_inference_time = 0.9 * avg_inference_time + 0.1 * inference_time
-                    
+                    avg_inf_time = 0.9 * avg_inf_time + 0.1 * inf_time
                     inference_count += 1
-                    self.last_results = results
-                    
-                    # Get annotated frame
-                    display_frame = results[0].plot()
+
+                    # Extract boxes for simple drawing
+                    boxes_data = results[0].boxes
+                    self.last_boxes = []
+                    for box in boxes_data:
+                        self.last_boxes.append({
+                            'xyxy': box.xyxy[0].cpu().numpy(),
+                            'conf': float(box.conf[0]),
+                            'cls': int(box.cls[0])
+                        })
+
+                # Draw detections
+                if SHOW_SIMPLE_BOXES:
+                    display_frame = frame.copy()
+                    if self.last_boxes:
+                        display_frame = self.draw_simple_boxes(display_frame, self.last_boxes)
                 else:
-                    # Use previous results or just show raw frame
-                    if self.last_results is not None:
-                        display_frame = self.last_results[0].plot()
+                    if should_infer:
+                        display_frame = results[0].plot()
                     else:
                         display_frame = frame.copy()
 
-                # --- Add performance overlay ---
-                # Semi-transparent background for text
-                overlay = display_frame.copy()
-                cv2.rectangle(overlay, (5, 5), (300, 85), (0, 0, 0), -1)
-                display_frame = cv2.addWeighted(display_frame, 0.7, overlay, 0.3, 0)
-                
-                # FPS text
-                cv2.putText(
-                    display_frame,
-                    f"FPS: {fps:.1f}",
-                    (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
-                
-                # Inference FPS text
-                cv2.putText(
-                    display_frame,
-                    f"Inference FPS: {inference_fps:.1f}",
-                    (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-                
-                # Inference time text
-                cv2.putText(
-                    display_frame,
-                    f"Inference: {avg_inference_time:.1f}ms",
-                    (10, 75),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
+                # Scale display if needed
+                if DISPLAY_SCALE != 1.0:
+                    new_width = int(display_frame.shape[1] * DISPLAY_SCALE)
+                    new_height = int(display_frame.shape[0] * DISPLAY_SCALE)
+                    display_frame = cv2.resize(display_frame, (new_width, new_height))
 
-                cv2.imshow('YOLO Live Detection - RPi Camera (Optimized)', display_frame)
+                # Minimal overlay (faster than fancy overlay)
+                num_det = len(self.last_boxes)
+                info_text = f"FPS:{fps:.0f} | Inf:{inf_fps:.0f} ({avg_inf_time:.0f}ms) | Det:{num_det}"
+                cv2.putText(display_frame, info_text, (5, 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-                # Handle key presses
+                cv2.imshow('ULTRA-OPTIMIZED', display_frame)
+
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break
                 elif key == ord('s'):
-                    filename = f'rpi_optimized_{int(time.time())}.jpg'
-                    cv2.imwrite(filename, display_frame)
-                    print(f"✓ Saved frame: {filename}")
+                    fname = f'ultra_opt_{int(time.time())}.jpg'
+                    cv2.imwrite(fname, display_frame)
+                    print(f"✓ Saved: {fname}")
 
         except KeyboardInterrupt:
-            print("\nInterrupted by user")
+            print("\nStopped by user")
 
         finally:
-            if self.pipeline is not None:
+            if self.pipeline:
                 self.pipeline.set_state(Gst.State.NULL)
             cv2.destroyAllWindows()
-            print("\n" + "="*50)
-            print(f"Camera stopped")
-            print(f"Final FPS: {fps:.1f}")
-            print(f"Average inference time: {avg_inference_time:.1f}ms")
-            print("="*50)
+            print(f"\n{'='*60}")
+            print(f"Final stats: {fps:.1f} FPS | Avg inference: {avg_inf_time:.1f}ms")
+            print(f"{'='*60}")
 
 
 def main():
-    print("\n" + "="*50)
-    print("RPi YOLO Inference - Optimized Version")
-    print("="*50)
-    print(f"Configuration:")
-    print(f"  - Model: {MODEL_PATH}")
-    print(f"  - Confidence: {CONF_THRESHOLD}")
-    print(f"  - Inference size: {INFER_IMGSZ}x{INFER_IMGSZ}")
-    print(f"  - Camera resolution: {CAMERA_WIDTH}x{CAMERA_HEIGHT}")
-    print(f"  - Frame skip: every {SKIP_EVERY_N_FRAMES} frame(s)")
-    print("="*50 + "\n")
-    
-    inference = RpiCameraInference(
+    inference = UltraOptimizedInference(
         model_path=MODEL_PATH,
         conf_threshold=CONF_THRESHOLD
     )
