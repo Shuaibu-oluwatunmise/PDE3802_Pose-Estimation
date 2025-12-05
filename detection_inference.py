@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Simple YOLO Live Inference Script
-Detects all 5 classes and displays them with bounding boxes
-Perfect for testing and debugging
+Optimized YOLO Detection Script with Adaptive Frame Skipping
+Performance optimized for Raspberry Pi
+Detection only - no pose estimation
 """
 
 import os
-# RPI CSI: Set environment variables
 os.environ["PYTHONNOUSERSITE"] = "1"
 os.environ["GST_PLUGIN_PATH"] = "/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:" + os.environ.get("GST_PLUGIN_PATH", "")
 
@@ -23,10 +22,10 @@ import numpy as np
 from ultralytics import YOLO
 import time
 
-class SimpleYOLOInference:
-    def __init__(self, model_path, camera_index=1):
+class AdaptiveYOLODetector:
+    def __init__(self, model_path):
         print("\n" + "="*60)
-        print("SIMPLE YOLO LIVE INFERENCE")
+        print("ADAPTIVE YOLO DETECTION (OPTIMIZED FOR PI)")
         print("="*60)
         
         # Load YOLO model
@@ -34,22 +33,38 @@ class SimpleYOLOInference:
         self.model = YOLO(model_path)
         self.model.fuse()
         
+        # Try FP16 for speed
+        try:
+            self.model.model.half()
+            print("✓ FP16 (half precision) enabled")
+        except:
+            print("⚠ FP16 not available, using FP32")
+        
         self.class_names = self.model.names
         print(f"\nModel Classes: {self.class_names}")
         print(f"Number of classes: {len(self.class_names)}")
         print("="*60 + "\n")
         
-        # GStreamer setup
+        # Camera
         self.pipeline = None
         self.sink = None
-        self.camera_index = camera_index
         
-        # Detection settings
-        self.conf_threshold = 0.3  # Confidence threshold
-        self.iou_threshold = 0.5   # NMS IOU threshold
-        self.img_size = 384        # Inference size
+        # ADAPTIVE FRAME SKIPPING (like your working script)
+        self.frame_idx = 0
+        self.yolo_every_n_tracking = 3    # Run YOLO every 3rd frame when tracking
+        self.yolo_every_n_search = 1      # Run YOLO every frame when searching
+        self.no_det_frames = 0            # Counter for lost detections
         
-        # Colors for each class (BGR format)
+        # Cache last detections
+        self.last_bboxes = {}
+        self.last_confidences = {}
+        
+        # Detection settings (optimized like your script)
+        self.conf_threshold = 0.3    # Lower threshold to catch more
+        self.iou_threshold = 0.5
+        self.img_size = 384          # Good balance of speed/accuracy
+        
+        # Colors for each class
         self.colors = [
             (0, 255, 0),      # Green
             (255, 0, 0),      # Blue
@@ -60,10 +75,14 @@ class SimpleYOLOInference:
             (128, 0, 128),    # Purple
             (255, 165, 0),    # Orange
         ]
+        
+        print(f"Settings: imgsz={self.img_size}, conf={self.conf_threshold}")
+        print(f"Adaptive skipping: every {self.yolo_every_n_search} frame (search) / every {self.yolo_every_n_tracking} frames (tracking)")
+        print("="*60 + "\n")
     
     def start_camera(self):
-        """Start Raspberry Pi CSI Camera"""
-        print("Starting Raspberry Pi CSI Camera...")
+        """Start Raspberry Pi CSI Camera via GStreamer"""
+        print("Starting Raspberry Pi CSI Camera via GStreamer/libcamera...")
         Gst.init(None)
         
         gst_str = (
@@ -77,14 +96,14 @@ class SimpleYOLOInference:
             self.pipeline = Gst.parse_launch(gst_str)
             self.sink = self.pipeline.get_by_name("sink")
             self.pipeline.set_state(Gst.State.PLAYING)
-            print("✓ Camera started: 640x480\n")
+            print("✓ GStreamer pipeline STARTED: 640x480\n")
             return True
         except Exception as e:
             print(f"✗ Camera error: {e}")
             return False
     
     def pull_frame(self, timeout_ns=10_000_000):
-        """Read frame from camera"""
+        """Read frame from GStreamer pipeline"""
         if self.sink is None:
             return None
         
@@ -107,14 +126,25 @@ class SimpleYOLOInference:
         finally:
             buf.unmap(mapinfo)
     
-    def draw_detections(self, frame, results):
-        """Draw bounding boxes and labels on frame"""
-        result = results[0]
+    def detect_objects(self, frame):
+        """Run YOLO detection"""
+        results = self.model(
+            frame,
+            verbose=False,
+            imgsz=self.img_size,
+            conf=self.conf_threshold,
+            iou=self.iou_threshold,
+            half=True  # Use FP16 if available
+        )
         
+        return results[0]
+    
+    def draw_detections(self, frame, result):
+        """Draw bounding boxes and labels"""
         if result.boxes is None or len(result.boxes) == 0:
-            return frame, 0
+            return frame, {}
         
-        detection_count = 0
+        current_detections = {}
         
         for box in result.boxes:
             # Get box info
@@ -123,13 +153,21 @@ class SimpleYOLOInference:
             class_id = int(box.cls[0])
             class_name = self.class_names.get(class_id, "unknown")
             
+            # Store detection
+            if class_name not in current_detections:
+                current_detections[class_name] = []
+            current_detections[class_name].append({
+                'bbox': [x1, y1, x2, y2],
+                'conf': confidence
+            })
+            
             # Get color for this class
             color = self.colors[class_id % len(self.colors)]
             
             # Draw bounding box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             
-            # Create label with class name and confidence
+            # Create label
             label = f"{class_name}: {confidence:.2f}"
             
             # Get label size for background
@@ -156,16 +194,11 @@ class SimpleYOLOInference:
                 (255, 255, 255),
                 2
             )
-            
-            detection_count += 1
-            
-            # Print to console
-            print(f"  └─ {class_name} (ID={class_id}): {confidence:.2f} at [{x1}, {y1}, {x2}, {y2}]")
         
-        return frame, detection_count
+        return frame, current_detections
     
     def run(self):
-        """Main inference loop"""
+        """Main detection loop with adaptive frame skipping"""
         print("Controls:")
         print("  'q' or ESC - Quit")
         print("  's' - Save frame")
@@ -181,7 +214,7 @@ class SimpleYOLOInference:
         fps = 0
         last_time = time.time()
         
-        print("Starting inference...\n")
+        print("Starting adaptive detection...\n")
         
         try:
             while True:
@@ -191,6 +224,7 @@ class SimpleYOLOInference:
                     continue
                 
                 frame_count += 1
+                display_frame = frame.copy()
                 
                 # Calculate FPS
                 current_time = time.time()
@@ -199,23 +233,39 @@ class SimpleYOLOInference:
                     frame_count = 0
                     last_time = current_time
                 
-                # Run YOLO inference
-                results = self.model(
-                    frame,
-                    verbose=False,
-                    imgsz=self.img_size,
-                    conf=self.conf_threshold,
-                    iou=self.iou_threshold
-                )
+                # ADAPTIVE FRAME SKIPPING (like your working script)
+                self.frame_idx += 1
                 
-                # Draw detections
-                print(f"\rFrame detections:", end="")
-                display_frame, det_count = self.draw_detections(frame.copy(), results)
+                # Decide mode: "tracking" if we have detections, "search" if not
+                any_detections = bool(self.last_bboxes)
+                mode_every_n = self.yolo_every_n_tracking if any_detections else self.yolo_every_n_search
                 
-                if det_count == 0:
-                    print(" None")
+                # Determine if we run YOLO this frame
+                run_yolo = (self.frame_idx % mode_every_n == 0)
+                
+                # Safety: if no detections for 10 frames, force search mode
+                if not any_detections:
+                    self.no_det_frames += 1
                 else:
-                    print(f" {det_count} objects")
+                    self.no_det_frames = 0
+                
+                if self.no_det_frames > 10:
+                    run_yolo = True
+                    self.frame_idx = 0
+                
+                # Run detection or use cached results
+                if run_yolo:
+                    result = self.detect_objects(frame)
+                    display_frame, detections = self.draw_detections(display_frame, result)
+                    self.last_bboxes = detections
+                else:
+                    # Use cached detections (just for display mode indicator)
+                    detections = self.last_bboxes
+                    if result is not None:
+                        display_frame, _ = self.draw_detections(display_frame, result)
+                
+                # Count total detections
+                total_count = sum(len(v) for v in detections.values())
                 
                 # Draw info overlay
                 info_y = 30
@@ -232,10 +282,29 @@ class SimpleYOLOInference:
                 )
                 info_y += 30
                 
+                # Mode indicator (like your script)
+                if run_yolo:
+                    mode_text = "Mode: SEARCH (YOLO)"
+                    mode_color = (0, 255, 255)  # Yellow
+                else:
+                    mode_text = f"Mode: TRACKING (SKIP {mode_every_n})"
+                    mode_color = (0, 255, 0)  # Green
+                
+                cv2.putText(
+                    display_frame,
+                    mode_text,
+                    (10, info_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    mode_color,
+                    2
+                )
+                info_y += 30
+                
                 # Confidence threshold
                 cv2.putText(
                     display_frame,
-                    f"Conf Threshold: {self.conf_threshold:.2f}",
+                    f"Conf: {self.conf_threshold:.2f}",
                     (10, info_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -247,7 +316,7 @@ class SimpleYOLOInference:
                 # Detection count
                 cv2.putText(
                     display_frame,
-                    f"Detections: {det_count}",
+                    f"Objects: {total_count}",
                     (10, info_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -255,8 +324,22 @@ class SimpleYOLOInference:
                     2
                 )
                 
-                # Show frame
-                cv2.imshow('YOLO Live Inference', display_frame)
+                # Show detections per class
+                if total_count > 0:
+                    status_y = display_frame.shape[0] - 20
+                    status_text = " | ".join([f"{k}: {len(v)}" for k, v in detections.items()])
+                    cv2.putText(
+                        display_frame,
+                        status_text,
+                        (10, status_y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2
+                    )
+                
+                # Display
+                cv2.imshow('Adaptive YOLO Detection', display_frame)
                 
                 # Handle keys
                 key = cv2.waitKey(1) & 0xFF
@@ -266,7 +349,7 @@ class SimpleYOLOInference:
                     break
                 
                 elif key == ord('s'):  # Save frame
-                    filename = f"yolo_detection_{saved_count:03d}.jpg"
+                    filename = f"detection_{saved_count:03d}.jpg"
                     cv2.imwrite(filename, display_frame)
                     print(f"\n✓ Saved: {filename}")
                     saved_count += 1
@@ -293,10 +376,9 @@ class SimpleYOLOInference:
 def main():
     # Configuration
     model_path = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
-    camera_index = 1
     
-    # Create and run inference
-    detector = SimpleYOLOInference(model_path, camera_index)
+    # Create and run detector
+    detector = AdaptiveYOLODetector(model_path)
     detector.run()
 
 
