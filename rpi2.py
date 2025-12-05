@@ -42,8 +42,8 @@ ARUCO_IDS = {
 }
 
 ARUCO_MARKER_SIZES = {
-    "phone": 50.0,   # mm
-    "estop": 32.0,  # mm
+    "phone": 37.0,   # mm
+    "estop": 20.0,  # mm
 }
 
 
@@ -83,18 +83,15 @@ OBJECT_CONFIGS = {
         "ema_alpha": 0.2,
     },
 
-    # ArUco objects
+    # ArUco objects (pose from ArUco, not homography)
     "phone": {
         "label_substring": "phone",
         "axis_color": (255, 255, 0),     # Cyan
         "method": "aruco",
         "aruco_id": ARUCO_IDS["phone"],
         "marker_size_mm": ARUCO_MARKER_SIZES["phone"],
-
-        # 🔧 ADD THESE:
         "width_mm": ARUCO_MARKER_SIZES["phone"],
         "height_mm": ARUCO_MARKER_SIZES["phone"],
-
         "ema_alpha": 0.3,
     },
     "estop": {
@@ -103,11 +100,8 @@ OBJECT_CONFIGS = {
         "method": "aruco",
         "aruco_id": ARUCO_IDS["estop"],
         "marker_size_mm": ARUCO_MARKER_SIZES["estop"],
-
-        
         "width_mm": ARUCO_MARKER_SIZES["estop"],
         "height_mm": ARUCO_MARKER_SIZES["estop"],
-
         "ema_alpha": 0.3,
     },
 }
@@ -144,7 +138,7 @@ class MultiObjectPoseEstimator:
             label_sub = cfg["label_substring"].lower()
             class_id = next(
                 (cid for cid, cname in self.class_names.items()
-                 if label_sub in cname.lower()),
+                if label_sub in cname.lower()),
                 None,
             )
             if class_id is None:
@@ -152,22 +146,27 @@ class MultiObjectPoseEstimator:
             else:
                 print(f"✓ {obj_name.capitalize()} class found: ID={class_id}")
 
+            method = cfg.get("method", "homography")
             width_mm = cfg["width_mm"]
             height_mm = cfg["height_mm"]
+            marker_size_mm = cfg.get("marker_size_mm", None)
+
             half_w = width_mm / 2.0
             half_h = height_mm / 2.0
 
             object_points_3d = np.array([
-                [-half_w,  half_h, 0],   # TL (Top-Left)
-                [ half_w,  half_h, 0],   # TR (Top-Right)
-                [ half_w, -half_h, 0],   # BR (Bottom-Right)
-                [-half_w, -half_h, 0],   # BL (Bottom-Left)
+                [-half_w,  half_h, 0],   # TL
+                [ half_w,  half_h, 0],   # TR
+                [ half_w, -half_h, 0],   # BR
+                [-half_w, -half_h, 0],   # BL
             ], dtype=np.float32)
 
             self.targets[obj_name] = {
                 "class_id": class_id,
+                "method": method,
                 "width_mm": width_mm,
                 "height_mm": height_mm,
+                "marker_size_mm": marker_size_mm,  # used for ArUco objects
                 "object_points_3d": object_points_3d,
                 "axis_color": cfg["axis_color"],
                 "min_matches": cfg.get("min_matches", 10),
@@ -181,7 +180,7 @@ class MultiObjectPoseEstimator:
                 "rvec_smooth": None,
                 "tvec_smooth": None,
                 "calib_buffer": [],
-                "calib_buffer_size": 3, 
+                "calib_buffer_size": 3,
             }
 
         # Camera parameters
@@ -197,6 +196,12 @@ class MultiObjectPoseEstimator:
         )                
         self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         print(f"✓ ORB optimized for Pi (1500 features).")
+
+        # --- ArUco detector (independent of YOLO) ---
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
+        self.aruco_params = cv2.aruco.DetectorParameters_create()
+        self.aruco_id_to_name = {v: k for k, v in ARUCO_IDS.items()}
+        print("✓ ArUco dictionary and parameters initialized.")
 
     # ------------------------------------------------------------------
     # GStreamer Pipeline Setup (RPI CSI)
@@ -473,6 +478,75 @@ class MultiObjectPoseEstimator:
         
         return np.degrees(roll), np.degrees(pitch), np.degrees(yaw)
     
+    def detect_and_estimate_aruco(self, frame, display_frame, y_offset_start):
+        """
+        Run ArUco detection and pose estimation in parallel to YOLO.
+        This does NOT depend on YOLO boxes at all.
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        corners_list, ids, _ = cv2.aruco.detectMarkers(
+            gray, self.aruco_dict, parameters=self.aruco_params
+        )
+
+        if ids is None or len(corners_list) == 0:
+            return display_frame, y_offset_start, 0
+
+        ids = ids.flatten()
+        tracked_count = 0
+
+        for marker_corners, marker_id in zip(corners_list, ids):
+            if marker_id not in self.aruco_id_to_name:
+                continue
+
+            obj_name = self.aruco_id_to_name[marker_id]
+            state = self.targets.get(obj_name, None)
+            if state is None:
+                continue
+
+            marker_size_mm = state.get("marker_size_mm", None)
+            if marker_size_mm is None:
+                continue
+
+            # Pose from single marker
+            rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+                marker_corners,
+                marker_size_mm,
+                self.camera_matrix,
+                self.dist_coeffs
+            )
+            if rvecs is None or tvecs is None:
+                continue
+
+            rvec_raw = rvecs[0].reshape(3, 1)
+            tvec_raw = tvecs[0].reshape(3, 1)
+
+            # EMA smoothing (same pattern as homography objects)
+            alpha = state.get("ema_alpha", 0.3)
+            if state["rvec_smooth"] is None:
+                state["rvec_smooth"] = rvec_raw.copy()
+                state["tvec_smooth"] = tvec_raw.copy()
+            else:
+                state["rvec_smooth"] = (1 - alpha) * state["rvec_smooth"] + alpha * rvec_raw
+                state["tvec_smooth"] = (1 - alpha) * state["tvec_smooth"] + alpha * tvec_raw
+
+            rvec_final = state["rvec_smooth"]
+            tvec_final = state["tvec_smooth"]
+
+            # Mark as "calibrated" for box coloring / status
+            state["calibrated"] = True
+
+            # Draw marker border for visualization
+            cv2.aruco.drawDetectedMarkers(display_frame, [marker_corners])
+
+            # Draw axes + pose info
+            display_frame = self.draw_3d_axes(display_frame, obj_name, rvec_final, tvec_final)
+            y_offset_start = self.draw_pose_info(display_frame, obj_name, y_offset_start, rvec_final, tvec_final)
+
+            tracked_count += 1
+
+        return display_frame, y_offset_start, tracked_count
+
     # ------------------------------------------------------------------
     # Drawing Utilities
     # ------------------------------------------------------------------
@@ -624,55 +698,63 @@ class MultiObjectPoseEstimator:
                     obj_name for obj_name, bbox in bboxes.items() if bbox is not None
                 ]
                 
-                # Per-object loop
+                # Per-object loop (YOLO side)
                 for obj_name in detected_objects:
                     bbox = bboxes[obj_name]
                     state = self.targets[obj_name]
-                    
+                    method = state.get("method", "homography")
+
+                    # Always draw YOLO detection box (for assessment / visualization)
                     display_frame = self.draw_detection_box(display_frame, obj_name, bbox)
-                    
+
+                    # For ArUco objects, we ONLY use ArUco for pose.
+                    # YOLO is just for detection display, so skip homography/PnP here.
+                    if method == "aruco":
+                        continue
+
+                    # --- Homography-based objects (card_game, circuit_board, notebook) ---
+
                     # Autocalibration 
                     if not state["calibrated"]:
                         conf = confidences.get(obj_name, 0.0)
-                        
+
                         # GATE check
-                        if self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):                
+                        if self.should_auto_calibrate(obj_name, bbox, conf, frame.shape):
                             # Buffer check
                             if not self.accumulate_and_maybe_calibrate(frame, obj_name, bbox):
-                                continue                
+                                continue
                         else:
                             continue
-                    
+
                     # Tracking proceeds only if calibrated
-                    if state["calibrated"]: 
-                        
+                    if state["calibrated"]:
                         # Homography Tracking (Lighter ORB)
                         corners = self.track_object_homography(frame, obj_name, bbox)
-                        
+
                         if corners is not None:
                             # Estimate pose
                             rvec_raw, tvec_raw = self.estimate_pose_pnp(obj_name, corners)
-                            
+
                             if rvec_raw is not None and tvec_raw is not None:
-                                
+
                                 # EMA Temporal Smoothing
-                                alpha = state.get("ema_alpha", 0.2) 
+                                alpha = state.get("ema_alpha", 0.2)
                                 if state["rvec_smooth"] is None:
                                     state["rvec_smooth"] = rvec_raw.copy()
                                     state["tvec_smooth"] = tvec_raw.copy()
                                 else:
                                     state["rvec_smooth"] = (1 - alpha) * state["rvec_smooth"] + alpha * rvec_raw
                                     state["tvec_smooth"] = (1 - alpha) * state["tvec_smooth"] + alpha * tvec_raw
-                                
+
                                 rvec_final = state["rvec_smooth"]
                                 tvec_final = state["tvec_smooth"]
 
                                 display_frame = self.draw_tracked_corners(display_frame, obj_name, corners)
                                 display_frame = self.draw_3d_axes(display_frame, obj_name, rvec_final, tvec_final)
-                                
+
                                 y_info_offset = self.draw_pose_info(display_frame, obj_name, y_info_offset, rvec_final, tvec_final)
                                 tracked_objects_count += 1
-                                
+
                             else:
                                 y_info_offset += 25
                                 cv2.putText(display_frame, f"Pose RANSAC failed for {obj_name}", (10, y_info_offset),
@@ -682,11 +764,16 @@ class MultiObjectPoseEstimator:
                             cv2.putText(display_frame, f"Homography/Inlier failed for {obj_name}", (10, y_info_offset),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
+                # --- ArUco-based pose estimation (independent of YOLO) ---
+                display_frame, y_info_offset, aruco_tracked = self.detect_and_estimate_aruco(
+                    frame, display_frame, y_info_offset
+                )
+                tracked_objects_count += aruco_tracked
+
                 # --- UI/FPS Handling ---
-                
                 cv2.putText(display_frame, f"FPS: {fps}", (display_frame.shape[1]-100, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                
+
                 # Visual cue for mode                
                 cue = "Search (YOLO)" if run_yolo else f"Tracking (SKIP {mode_every_n})"                
                 color = (0, 255, 0) if not run_yolo else (0, 255, 255)                
