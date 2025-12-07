@@ -246,7 +246,7 @@ class FastTracker(Node):
         
         # Camera Setup
         self.K = np.array(CAMERA_MATRIX, dtype=np.float32)
-        self.dist = np.array(DIST_COEFFS, dtype=np.float32) if DIST_COEFFS else None
+        self.dist = np.array(DIST_COEFFS, dtype=np.float32) if DIST_COEFFS is not None else None
         
         self.pipeline = None
         self.sink = None
