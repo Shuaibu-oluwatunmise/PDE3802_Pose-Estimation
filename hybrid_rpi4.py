@@ -12,6 +12,13 @@ Changes from hybrid_rpi3.py:
 
 import os
 os.environ["PYTHONNOUSERSITE"] = "1"
+# Optimization: Limit library threads to prevent starving the Main Loop
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 os.environ["GST_PLUGIN_PATH"] = "/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0:" + os.environ.get("GST_PLUGIN_PATH", "")
 if "DISPLAY" not in os.environ:
     os.environ["DISPLAY"] = ":0"
