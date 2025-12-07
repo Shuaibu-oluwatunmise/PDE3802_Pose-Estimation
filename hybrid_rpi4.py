@@ -59,8 +59,8 @@ OBJECT_SPECS = {
     "estop": {"color": (255, 0, 255), "method": "aruco", "aruco_id": ARUCO_IDS["estop"], "marker_size_m": ARUCO_MARKER_SIZES["estop"]},
 }
 
-MIN_DETECTION_CONFIDENCE = 0.60 # Slightly lower for speed/recall tradeoff
-STABLE_FRAMES_NEEDED = 3        # Reduced for responsiveness
+MIN_DETECTION_CONFIDENCE = 0.75 # Increased from 0.60 to reduce False Positives
+STABLE_FRAMES_NEEDED = 5        # Increased from 3 to ensure stability before locking
 MIN_FEATURES = 15
 ORB_FEATURES = 1000             # Reduced from 2000 for speed
 MIN_MATCH_COUNT = 10            # Reduced slightly
@@ -434,6 +434,7 @@ class Full5ObjectTracker(Node):
         self.frame_count = 0
         self.fps_counter = FPSCounter(self.get_logger())
         self.last_detections = {}
+        self.last_confs = {}
 
     def publish_tf(self, obj_name, rvec, tvec):
         t = TransformStamped()
@@ -498,11 +499,14 @@ class Full5ObjectTracker(Node):
                 if run_yolo:
                     results = self.yolo_model(frame, verbose=False)
                     self.last_detections = {}
+                    self.last_confs = {}
                     for r in results:
                         for box in r.boxes:
                             name = self.yolo_model.names[int(box.cls[0])]
-                            if name in OBJECT_SPECS and float(box.conf[0]) > MIN_DETECTION_CONFIDENCE:
+                            conf = float(box.conf[0])
+                            if name in OBJECT_SPECS and conf > MIN_DETECTION_CONFIDENCE:
                                 self.last_detections[name] = box.xyxy[0].cpu().numpy().astype(int)
+                                self.last_confs[name] = conf
                 
                 # ArUco
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -519,6 +523,7 @@ class Full5ObjectTracker(Node):
                 for name, specs in OBJECT_SPECS.items():
                     # Get bbox from YOLO (if ran) or Prediction
                     bbox = self.last_detections.get(name)
+                    conf = self.last_confs.get(name, 0.0)
                     
                     if specs["method"] == "feature":
                         tracker = self.feature_trackers[name]
@@ -535,13 +540,16 @@ class Full5ObjectTracker(Node):
                             # If run_yolo is True, it's fresh. Else it's effectively predicted/held.
                             color = specs["color"] if run_yolo else (255, 255, 0)
                             cv2.rectangle(display, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+                            if run_yolo:
+                                cv2.putText(display, f"{conf:.2f}", (bbox[0], bbox[1]-5), 0, 0.5, color, 1)
 
                         if bbox is not None:
                             if not tracker.has_reference:
                                 if tracker.is_bbox_stable(bbox):
                                     tracker.create_reference(frame, bbox, self.get_logger())
                                 else:
-                                    cv2.putText(display, f"{name}: Stabilizing", (10, y_off), 0, 0.5, (0,255,255), 1)
+                                    stable_cnt = len(tracker.stable_bbox_buffer)
+                                    cv2.putText(display, f"{name}: Stabilizing {stable_cnt}/{STABLE_FRAMES_NEEDED}", (10, y_off), 0, 0.5, (0,255,255), 1)
                             else:
                                 pose, status = tracker.track_pose(frame, bbox)
                                 if pose:
