@@ -66,8 +66,8 @@ OBJECT_SPECS = {
     "estop": {"color": (255, 0, 255), "method": "aruco", "aruco_id": ARUCO_IDS["estop"], "marker_size_m": ARUCO_MARKER_SIZES["estop"]},
 }
 
-MIN_DETECTION_CONFIDENCE = 0.75 # Increased from 0.60 to reduce False Positives
-STABLE_FRAMES_NEEDED = 5        # Increased from 3 to ensure stability before locking
+MIN_DETECTION_CONFIDENCE = 0.75
+STABLE_FRAMES_NEEDED = 1        # Synced with hybrid script
 MIN_FEATURES = 15
 ORB_FEATURES = 500              # Optimization: Lower features for Pi 4 CPU
 MIN_MATCH_COUNT = 10            # Reduced slightly
