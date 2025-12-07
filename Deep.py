@@ -499,6 +499,7 @@ class Optimized5ObjectTracker(Node):
         
         fps_counter = 0
         last_fps_time = self.get_clock().now().seconds_nanoseconds()[0]
+        fps = 0.0
         
         while rclpy.ok():
             frame = self.pull_frame()
