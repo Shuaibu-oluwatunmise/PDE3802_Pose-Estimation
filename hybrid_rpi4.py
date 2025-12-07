@@ -203,6 +203,7 @@ class FeatureTracker:
         self.stable_bbox_buffer = []
         self.prev_rvec, self.prev_tvec = None, None
         self.last_bbox = None
+        self.is_tracking = False
 
     def is_bbox_stable(self, bbox):
         self.stable_bbox_buffer.append(bbox)
@@ -321,6 +322,7 @@ class FeatureTracker:
         
         kp_live_crop, des_live = self.orb.detectAndCompute(gray_crop, None)
         if des_live is None or len(kp_live_crop) < MIN_FEATURES:
+            self.is_tracking = False
             return None, "No Feat"
 
         # Shift keypoints back to global coordinates
@@ -336,8 +338,7 @@ class FeatureTracker:
                 good_matches.append(m_match)
         
         if len(good_matches) < MIN_MATCH_COUNT:
-            # If we lost tracking, we might want to clear previous pose
-            # But let's keep it for one frame logic in main loop
+            self.is_tracking = False
             return None, f"Low Match {len(good_matches)}"
             
         obj_pts = []
@@ -349,7 +350,9 @@ class FeatureTracker:
         obj_pts = np.array(obj_pts, dtype=np.float32)
         img_pts = np.array(img_pts, dtype=np.float32)
 
-        if len(obj_pts) < MIN_PNP_POINTS: return None, "Low PnP Pts"
+        if len(obj_pts) < MIN_PNP_POINTS:
+            self.is_tracking = False
+            return None, "Low PnP Pts"
 
         # Use previous pose as initial guess if available
         use_guess = self.prev_rvec is not None
@@ -365,9 +368,11 @@ class FeatureTracker:
                 confidence=0.99, flags=cv2.SOLVEPNP_ITERATIVE
             )
         except:
+             self.is_tracking = False
              return None, "PnP Error"
 
         if not success or inliers is None or len(inliers) < MIN_PNP_INLIERS:
+             self.is_tracking = False
              return None, "PnP Failed"
              
         # Refine
@@ -380,10 +385,12 @@ class FeatureTracker:
         err = np.mean(np.linalg.norm(proj.reshape(-1, 2) - img_in, axis=1))
 
         if err > REPROJ_ERROR_THRESH:
+             self.is_tracking = False
              return None, f"High Err {err:.1f}"
 
         self.prev_rvec = rvec
         self.prev_tvec = tvec
+        self.is_tracking = True
         
         return {
             'rvec': rvec, 'tvec': tvec, 'inliers': img_in, 
@@ -395,6 +402,7 @@ class FeatureTracker:
         self.prev_rvec = None
         self.prev_tvec = None
         self.last_bbox = None
+        self.is_tracking = False
 
 # ============================================================================
 # MAIN TRACKER
@@ -425,7 +433,6 @@ class Full5ObjectTracker(Node):
         self.camera = ThreadedCamera(self.get_logger())
         self.frame_count = 0
         self.fps_counter = FPSCounter(self.get_logger())
-        self.yolo_interval = 30 # Run YOLO every 30 frames
         self.last_detections = {}
 
     def publish_tf(self, obj_name, rvec, tvec):
@@ -470,11 +477,23 @@ class Full5ObjectTracker(Node):
                 
                 display = frame.copy()
                 
-                # INTELLIGENT YOLO SCHEDULING
-                # Run YOLO if:
-                # 1. It is time (yolo_interval)
-                # 2. OR any active tracker has lost tracking? (Maybe too aggressive for now)
-                run_yolo = (self.frame_count % self.yolo_interval == 0)
+                # DYNAMIC YOLO SCHEDULING
+                # Check status of feature trackers
+                # If any tracker HAS reference but LOST tracking, we need to find it fast -> Fast YOLO
+                # If all trackers are fine -> Slow YOLO
+                
+                trackers_needing_help = False
+                for t in self.feature_trackers.values():
+                    if t.has_reference and not t.is_tracking:
+                        trackers_needing_help = True
+                        break
+                
+                # Interval logic:
+                # 5:  Aggressive search (Something is lost)
+                # 30: Maintenance (Smooth sailing)
+                yolo_interval = 5 if trackers_needing_help else 30
+                
+                run_yolo = (self.frame_count % yolo_interval == 0)
                 
                 if run_yolo:
                     results = self.yolo_model(frame, verbose=False)
@@ -510,9 +529,11 @@ class Full5ObjectTracker(Node):
                             if pred_bbox is not None:
                                 bbox = pred_bbox
                         
-                        # VISUALIZE BBOX (Cyan if predicted, Green if detected)
+                        # VISUALIZE BBOX (Cyan if predicted, Green if detected via YOLO recently)
                         if bbox is not None and DRAW_BBOX:
-                            color = specs["color"] if run_yolo else (255, 255, 0) # Cyan for prediction
+                            # Dim color if "stale" YOLO detection and no prediction? 
+                            # If run_yolo is True, it's fresh. Else it's effectively predicted/held.
+                            color = specs["color"] if run_yolo else (255, 255, 0)
                             cv2.rectangle(display, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
 
                         if bbox is not None:
@@ -532,9 +553,13 @@ class Full5ObjectTracker(Node):
                                     cv2.putText(display, f"{name}: {status}", (10, y_off), 0, 0.5, (0,0,255), 1)
                         else:
                              # YOLO didn't see it AND we couldn't predict it
+                             # Do NOT reset reference automatically if we just lost it.
+                             # Check if we should reset? Only manually on 'r'.
+                             status_msg = "Searching..."
                              if tracker.has_reference:
-                                 tracker.reset() 
-                             cv2.putText(display, f"{name}: Searching...", (10, y_off), 0, 0.5, (100,100,100), 1)
+                                 status_msg = "Lost (Ref Saved)"
+                             
+                             cv2.putText(display, f"{name}: {status_msg}", (10, y_off), 0, 0.5, (100,100,100), 1)
                     
                     # ARUCO TRACKING
                     elif specs["method"] == "aruco":
