@@ -105,6 +105,78 @@ def is_blurry(image, threshold=100):
     return val < threshold
 
 # ============================================================================
+# ASYNC YOLO THREAD
+# ============================================================================
+class YOLOAsync(threading.Thread):
+    def __init__(self, model_path, logger):
+        super().__init__()
+        self.model_path = model_path
+        self.logger = logger
+        self.daemon = True
+        self.running = True
+        self.input_queue = queue.Queue(maxsize=1)
+        self.output_queue = queue.Queue(maxsize=1)
+        self.model = None
+
+    def run(self):
+        self.logger.info(f"YOLO Thread: Loading {self.model_path}...")
+        try:
+            self.model = YOLO(self.model_path, task='detect')
+            self.logger.info("YOLO Thread: Model Loaded.")
+        except Exception as e:
+            self.logger.error(f"YOLO Method Load Failed: {e}")
+            self.running = False
+            return
+
+        while self.running:
+            try:
+                frame = self.input_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            try:
+                results = self.model(frame, verbose=False)
+                detections = {}
+                confs = {}
+                
+                for r in results:
+                    for box in r.boxes:
+                        try:
+                            cls_id = int(box.cls[0])
+                            name = self.model.names[cls_id]
+                            conf = float(box.conf[0])
+                            
+                            if name in OBJECT_SPECS and conf > MIN_DETECTION_CONFIDENCE:
+                                detections[name] = box.xyxy[0].cpu().numpy().astype(int)
+                                confs[name] = conf
+                        except Exception:
+                            continue
+                            
+                # Put results (overwrite old if exists)
+                if self.output_queue.full():
+                    try: self.output_queue.get_nowait()
+                    except: pass
+                self.output_queue.put((detections, confs))
+
+            except Exception as e:
+                self.logger.error(f"YOLO Inference Error: {e}")
+
+    def detect_async(self, frame):
+        if not self.running: return
+        if self.input_queue.full(): return # Skip if busy
+        # Copy might be needed if frame is modified elsewhere, usually safe if we just send current
+        self.input_queue.put(frame.copy())
+        
+    def get_result(self):
+        try:
+            return self.output_queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        self.running = False
+
+# ============================================================================
 # THREADED CAMERA
 # ============================================================================
 class ThreadedCamera:
@@ -413,9 +485,9 @@ class Full5ObjectTracker(Node):
         super().__init__('full_5_object_tracker_node')
         self.tf_broadcaster = TransformBroadcaster(self)
         
-        self.get_logger().info(f"Loading YOLO from {YOLO_MODEL_PATH}...")
-        self.yolo_model = YOLO(YOLO_MODEL_PATH, task='detect')
-        self.get_logger().info("✓ YOLO loaded")
+        # Async YOLO Init
+        self.yolo_async = YOLOAsync(YOLO_MODEL_PATH, self.get_logger())
+        self.yolo_async.start()
         
         self.K, self.dist = load_calibration()
         self.orb = cv2.ORB_create(nfeatures=ORB_FEATURES)
@@ -462,7 +534,7 @@ class Full5ObjectTracker(Node):
 
     def run(self):
         if not self.camera.start(): return
-        self.get_logger().info("Setup Complete. Starting Loop...")
+        self.get_logger().info("Setup Complete. Starting Async Loop...")
         
         target_fps = 6.0
         frame_time = 1.0 / target_fps
@@ -477,43 +549,27 @@ class Full5ObjectTracker(Node):
 
                 self.frame_count += 1
                 self.fps_counter.update()
+                
+                # Check for Async YOLO results
+                # Try sending frame to YOLO (if not full)
+                self.yolo_async.detect_async(frame)
+                
+                # Check for new results
+                new_results = self.yolo_async.get_result()
+                current_yolo_detections = {} # Holds detections JUST arrived this frame
+                
+                if new_results:
+                    dets, confs = new_results
+                    current_yolo_detections = dets
+                    # Update global last detections for fallback/ref
+                    for k, v in dets.items():
+                        self.last_detections[k] = v
+                        self.last_confs[k] = confs.get(k, 0.0)
 
                 if UNDISTORT and self.dist is not None:
                      frame = cv2.undistort(frame, self.K, self.dist)
                 
                 display = frame.copy()
-                
-                # DYNAMIC YOLO SCHEDULING
-                # Check status of feature trackers
-                # If any tracker HAS reference but LOST tracking, we need to find it fast -> Fast YOLO
-                # If all trackers are fine -> Slow YOLO
-                
-                trackers_needing_help = False
-                for t in self.feature_trackers.values():
-                    if t.has_reference and not t.is_tracking:
-                        trackers_needing_help = True
-                        break
-                
-                # Interval logic:
-                # 5:  Aggressive search (Something is lost)
-                # 30: Maintenance (Smooth sailing)
-                yolo_interval = 5 if trackers_needing_help else 30
-                
-                run_yolo = (self.frame_count % yolo_interval == 0)
-                
-                if run_yolo:
-                    # Filter classes to ONLY detecting the ones we need for feature tracking
-                    results = self.yolo_model(frame, verbose=False)
-                    self.last_detections = {}
-                    self.last_confs = {}
-                    for r in results:
-                        for box in r.boxes:
-                            name = self.yolo_model.names[int(box.cls[0])]
-                            
-                            conf = float(box.conf[0])
-                            if name in OBJECT_SPECS and conf > MIN_DETECTION_CONFIDENCE:
-                                self.last_detections[name] = box.xyxy[0].cpu().numpy().astype(int)
-                                self.last_confs[name] = conf
                 
                 # ArUco
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -528,29 +584,65 @@ class Full5ObjectTracker(Node):
                 
                 # PROCESS OBJECTS
                 for name, specs in OBJECT_SPECS.items():
-                    # Get bbox from YOLO (if ran) or Prediction
-                    bbox = self.last_detections.get(name)
-                    conf = self.last_confs.get(name, 0.0)
-                    
-                    if specs["method"] == "feature":
+                    # --- ARUCO METHOD ---
+                    if specs["method"] == "aruco":
+                        # ArUco Logic: Check ArUco First
+                        tid = specs["aruco_id"]
+                        found_aruco = False
+                        if tid in aruco_map:
+                            c = aruco_map[tid]
+                            ms = specs["marker_size_m"]
+                            op = np.array([[-ms/2, ms/2, 0], [ms/2, ms/2, 0], [ms/2, -ms/2, 0], [-ms/2, -ms/2, 0]], dtype=np.float32)
+                            ret, rv, tv = cv2.solvePnP(op, c, self.K, self.dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+                            if ret:
+                                self.publish_tf(name, rv, tv)
+                                self.draw_axes(display, name, rv, tv)
+                                t = tv.flatten()
+                                cv2.putText(display, f"{name}: ArUco OK", (10, y_off), 0, 0.6, specs["color"], 2)
+                                found_aruco = True
+                        
+                        # Fallback/Supplemental: Visualize YOLO if we see it, but don't rely on it for pose
+                        # Only draw if explicitly detected THIS FRAME or very recently?
+                        # User wants full visibility.
+                        y_box = self.last_detections.get(name)
+                        # Ghost box fix: ONLY draw if we actually found aruco OR we have a very fresh detection?
+                        # Actually for visual debug, if we have a YOLO box, draw it. 
+                        # But if it's old, maybe don't?
+                        # Let's simple check: Is it in 'current_yolo_detections'? (Fresh)
+                        if name in current_yolo_detections:
+                             b = current_yolo_detections[name]
+                             cv2.rectangle(display, (b[0], b[1]), (b[2], b[3]), specs["color"], 2)
+                             cv2.putText(display, f"YOLO", (b[0], b[1]-5), 0, 0.5, specs["color"], 1)
+
+                    # --- FEATURE METHOD ---
+                    elif specs["method"] == "feature":
                         tracker = self.feature_trackers[name]
                         
-                        # If we didn't run YOLO this frame, ask tracker to predict bbox from previous pose
-                        if not run_yolo and tracker.has_reference and tracker.prev_rvec is not None:
-                            pred_bbox = tracker.predict_next_bbox(frame.shape)
-                            if pred_bbox is not None:
-                                bbox = pred_bbox
+                        # 1. Update Tracking with Pred
+                        bbox = None
+                        is_fresh_yolo = name in current_yolo_detections
                         
-                        # VISUALIZE BBOX (Cyan if predicted, Green if detected via YOLO recently)
-                        if bbox is not None and DRAW_BBOX:
-                            # Dim color if "stale" YOLO detection and no prediction? 
-                            # If run_yolo is True, it's fresh. Else it's effectively predicted/held.
-                            color = specs["color"] if run_yolo else (255, 255, 0)
-                            cv2.rectangle(display, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
-                            if run_yolo:
-                                cv2.putText(display, f"{conf:.2f}", (bbox[0], bbox[1]-5), 0, 0.5, color, 1)
-
+                        if is_fresh_yolo:
+                            bbox = current_yolo_detections[name] # Trust fresh YOLO
+                        elif tracker.is_tracking:
+                            bbox = tracker.predict_next_bbox(frame.shape) # Trust Tracker Pred
+                        
+                        # Recovery from 'lost' using old yolo? 
+                        # The user complained about 'ghost boxes'.
+                        # If we are lost, and we have NO fresh YOLO, do NOT assume old YOLO is valid.
+                        # So bbox remains None if not tracking and not fresh.
+                        
+                        # EXECUTE TRACKING
                         if bbox is not None:
+                            # Draw Box (Green if fresh YOLO, Cyan if Tracking)
+                            if DRAW_BBOX:
+                                clr = specs["color"] if is_fresh_yolo else (255, 255, 0)
+                                cv2.rectangle(display, (bbox[0], bbox[1]), (bbox[2], bbox[3]), clr, 2)
+                                if is_fresh_yolo:
+                                    conf = self.last_confs.get(name, 0.0)
+                                    cv2.putText(display, f"{conf:.2f}", (bbox[0], bbox[1]-5), 0, 0.5, clr, 1)
+
+                            # If we have a box, try to track/refine
                             if not tracker.has_reference:
                                 if tracker.is_bbox_stable(bbox):
                                     tracker.create_reference(frame, bbox, self.get_logger())
@@ -567,36 +659,12 @@ class Full5ObjectTracker(Node):
                                 else:
                                     cv2.putText(display, f"{name}: {status}", (10, y_off), 0, 0.5, (0,0,255), 1)
                         else:
-                             # YOLO didn't see it AND we couldn't predict it
-                             # Do NOT reset reference automatically if we just lost it.
-                             # Check if we should reset? Only manually on 'r'.
-                             status_msg = "Searching..."
-                             if tracker.has_reference:
-                                 status_msg = "Lost (Ref Saved)"
-                             
-                             cv2.putText(display, f"{name}: {status_msg}", (10, y_off), 0, 0.5, (100,100,100), 1)
-                    
-                    # ARUCO TRACKING
-                    elif specs["method"] == "aruco":
-                        tid = specs["aruco_id"]
-                        if tid in aruco_map:
-                            c = aruco_map[tid]
-                            # SolvePnP
-                            ms = specs["marker_size_m"]
-                            op = np.array([[-ms/2, ms/2, 0], [ms/2, ms/2, 0], [ms/2, -ms/2, 0], [-ms/2, -ms/2, 0]], dtype=np.float32)
-                            ret, rv, tv = cv2.solvePnP(op, c, self.K, self.dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-                            if ret:
-                                self.publish_tf(name, rv, tv)
-                                self.draw_axes(display, name, rv, tv)
-                                t = tv.flatten()
-                                cv2.putText(display, f"{name}: {t[0]:.2f},{t[1]:.2f},{t[2]:.2f}", (10, y_off), 0, 0.6, specs["color"], 2)
-                        else:
-                            cv2.putText(display, f"{name}: Searching (ArUco)", (10, y_off), 0, 0.5, (100,100,100), 1)
-                        
-                    y_off += 20
+                             # No Box (Lost and No Fresh YOLO)
+                             # Check if we have an old reference we are holding onto?
+                             msg = "Lost (Ref Saved)" if tracker.has_reference else "Searching..."
+                             cv2.putText(display, f"{name}: {msg}", (10, y_off), 0, 0.5, (100,100,100), 1)
 
-                # FPS Calc (Running Average)
-                # ... skip for brevity, or add simple one
+                    y_off += 20
                 
                 cv2.imshow("Optimized Tracker (RPi4)", display)
                 key = cv2.waitKey(1) & 0xFF
@@ -614,6 +682,7 @@ class Full5ObjectTracker(Node):
         except KeyboardInterrupt:
             pass
         finally:
+            self.yolo_async.stop()
             self.camera.stop()
             cv2.destroyAllWindows()
             self.destroy_node()
