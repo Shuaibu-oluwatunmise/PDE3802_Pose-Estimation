@@ -62,7 +62,7 @@ OBJECT_SPECS = {
 MIN_DETECTION_CONFIDENCE = 0.75 # Increased from 0.60 to reduce False Positives
 STABLE_FRAMES_NEEDED = 5        # Increased from 3 to ensure stability before locking
 MIN_FEATURES = 15
-ORB_FEATURES = 1000             # Reduced from 2000 for speed
+ORB_FEATURES = 500              # Optimization: Lower features for Pi 4 CPU
 MIN_MATCH_COUNT = 10            # Reduced slightly
 MIN_PNP_POINTS = 6
 MIN_PNP_INLIERS = 6
@@ -165,7 +165,7 @@ class YOLOAsync(threading.Thread):
         if not self.running: return
         if self.input_queue.full(): return # Skip if busy
         # Copy might be needed if frame is modified elsewhere, usually safe if we just send current
-        self.input_queue.put(frame.copy())
+        self.input_queue.put(frame) # Optimization: No copy needed
         
     def get_result(self):
         try:
@@ -437,7 +437,7 @@ class FeatureTracker:
                 obj_pts, img_pts, self.K, self.dist,
                 useExtrinsicGuess=use_guess,
                 rvec=rvec_init, tvec=tvec_init,
-                iterationsCount=100, reprojectionError=8.0,
+                iterationsCount=50, reprojectionError=8.0,
                 confidence=0.99, flags=cv2.SOLVEPNP_ITERATIVE
             )
         except:
