@@ -173,10 +173,19 @@ class FeatureTracker:
     
     def create_reference(self, frame, bbox, logger):
         x1, y1, x2, y2 = bbox
+        # Add margin to crop
+        h, w = frame.shape[:2]
+        m = 10
+        x1, y1 = max(0, x1-m), max(0, y1-m)
+        x2, y2 = min(w, x2+m), min(h, y2+m)
+        
         crop = frame[y1:y2, x1:x2].copy()
+        crop_h, crop_w = crop.shape[:2]
+        
         if is_blurry(crop, threshold=100):
             logger.warn(f"{self.obj_name}: Frame too blurry")
             return False
+            
         kp_crop, des_crop = self.orb.detectAndCompute(crop, None)
         if des_crop is None or len(kp_crop) < MIN_FEATURES:
             logger.warn(f"{self.obj_name}: Too few features: {0 if des_crop is None else len(kp_crop)}")
@@ -186,7 +195,6 @@ class FeatureTracker:
         logger.info(f"CREATING REFERENCE: {self.obj_name.upper()}")
         logger.info(f"Detected {len(kp_crop)} features")
         
-        crop_h, crop_w = crop.shape[:2]
         sx = self.obj_width / crop_w
         sy = self.obj_height / crop_h
         
@@ -195,11 +203,20 @@ class FeatureTracker:
         valid_des = []
         
         for i, kp in enumerate(kp_crop):
-            u, v = kp.pt
-            X = u * sx
-            Y = -v * sy
+            u, v = kp.pt # relative to crop
+            
+            # X Right is positive (Same as pixel u)
+            # Center of object is 0, so subtract half width
+            X = (u * sx) - (self.obj_width / 2.0)
+            
+            # Y Up is positive (Opposite to pixel v)
+            # Center of object is 0, so shift standard Y-down to Y-up and center
+            Y = (-v * sy) + (self.obj_height / 2.0)
+            
             Z = 0.0
             plane_ref.append([X, Y, Z])
+            
+            # Keypoint global coords
             kp_adjusted = cv2.KeyPoint(kp.pt[0] + x1, kp.pt[1] + y1,
                                        kp.size, kp.angle, kp.response,
                                        kp.octave, kp.class_id)
@@ -212,7 +229,7 @@ class FeatureTracker:
         self.plane_ref = np.array(plane_ref, dtype=np.float32)
         self.has_reference = True
         
-        logger.info(f"✓ Reference created: {len(self.ref_kp)} features")
+        logger.info(f"✓ Reference created: {len(self.ref_kp)} features (Axes Centered)")
         logger.info(f"{'='*60}\n")
         return True
     
