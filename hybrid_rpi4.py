@@ -47,9 +47,7 @@ from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, D
 # ============================================================================
 # Try to find optimized models first
 YOLO_MODEL_PATH = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
-if os.path.exists('runs/detect/yolov8n_detect_V2/weights/best_ncnn_model'):
-    YOLO_MODEL_PATH = 'runs/detect/yolov8n_detect_V2/weights/best_ncnn_model'
-elif os.path.exists('runs/detect/yolov8n_detect_V2/weights/best.tflite'):
+if os.path.exists('runs/detect/yolov8n_detect_V2/weights/best.tflite'):
     YOLO_MODEL_PATH = 'runs/detect/yolov8n_detect_V2/weights/best.tflite'
 elif os.path.exists('runs/detect/yolov8n_detect_V2/weights/best.onnx'):
     YOLO_MODEL_PATH = 'runs/detect/yolov8n_detect_V2/weights/best.onnx'
