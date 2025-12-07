@@ -56,7 +56,7 @@ OBJECT_SPECS = {
 }
 
 MIN_DETECTION_CONFIDENCE = 0.55  # Requested Compromise
-STABLE_FRAMES_NEEDED = 3
+STABLE_FRAMES_NEEDED = 2
 MIN_FEATURES = 15
 ORB_FEATURES = 2000             # Slight bump up from 500 since we have better res
 MIN_MATCH_COUNT = 10
@@ -333,6 +333,9 @@ class Full5ObjectTracker(Node):
                 self.feature_trackers[name] = FeatureTracker(name, specs, self.orb, self.bf, self.K, self.dist)
 
         self.camera = ThreadedCamera(self.get_logger())
+        self.fps_start = time.time()
+        self.frame_count = 0
+        self.fps = 0.0
 
     def publish_tf(self, obj_name, rvec, tvec):
         t = TransformStamped()
@@ -367,6 +370,14 @@ class Full5ObjectTracker(Node):
                 if frame is None:
                     time.sleep(0.01)
                     continue
+
+                # FPS Calculation
+                self.frame_count += 1
+                elapsed = time.time() - self.fps_start
+                if elapsed >= 1.0:
+                    self.fps = self.frame_count / elapsed
+                    self.frame_count = 0
+                    self.fps_start = time.time()
                 
                 # ArUco (Fast, independent)
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -410,6 +421,8 @@ class Full5ObjectTracker(Node):
                             if ret:
                                 self.publish_tf(name, rv, tv)
                                 self.draw_axes(display, name, rv, tv)
+                                t = tv.flatten()
+                                cv2.putText(display, f"{name}: [{t[0]:.2f},{t[1]:.2f},{t[2]:.2f}]m", (10, y_off), 0, 0.5, specs["color"], 2)
                                 tracking_count += 1
                         
                         # Just draw YOLO box if seen
@@ -439,6 +452,8 @@ class Full5ObjectTracker(Node):
                                 if pose:
                                     self.publish_tf(name, pose['rvec'], pose['tvec'])
                                     self.draw_axes(display, name, pose['rvec'], pose['tvec'])
+                                    t = pose['tvec'].flatten()
+                                    cv2.putText(display, f"{name}: [{t[0]:.2f},{t[1]:.2f},{t[2]:.2f}]m", (10, y_off), 0, 0.5, specs["color"], 2)
                                     tracking_count += 1
                                 else:
                                     cv2.putText(display, f"{name}: {status}", (10, y_off), 0, 0.5, (0,0,255), 1)
@@ -450,6 +465,7 @@ class Full5ObjectTracker(Node):
 
                     y_off += 20
                 
+                cv2.putText(display, f"FPS: {self.fps:.1f}", (display.shape[1]-120, 30), 0, 0.7, (0, 255, 0), 2)
                 cv2.putText(display, f"Track: {tracking_count}/5", (10, 470), 0, 0.7, (0,255,0), 2)
                 cv2.imshow("Compromise Tracker", display)
                 
