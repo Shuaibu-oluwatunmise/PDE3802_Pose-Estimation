@@ -166,6 +166,25 @@ class ThreadedCamera:
         self.logger.info("Camera thread stopped")
 
 # ============================================================================
+# FPS COUNTER
+# ============================================================================
+class FPSCounter:
+    def __init__(self, logger):
+        self.logger = logger
+        self.start_time = time.time()
+        self.frame_count = 0
+        self.interval = 2.0 # Print every 2 seconds
+
+    def update(self):
+        self.frame_count += 1
+        elapsed = time.time() - self.start_time
+        if elapsed > self.interval:
+            fps = self.frame_count / elapsed
+            self.logger.info(f"FPS: {fps:.2f}")
+            self.start_time = time.time()
+            self.frame_count = 0
+
+# ============================================================================
 # FEATURE TRACKER CLASS (OPTIMIZED)
 # ============================================================================
 class FeatureTracker:
@@ -211,20 +230,28 @@ class FeatureTracker:
             return False
 
         # Adjust KeyPoints to global coordinates and create 3D plane
+        # Mapping: We want the center of the bounding box to be (0,0,0) in 3D
         sx, sy = self.obj_width / (x2-x1), self.obj_height / (y2-y1)
         
         plane_ref, valid_kp, valid_des = [], [], []
-        # Center of crop for 3D origin assumption
-        cx, cy = (x2-x1)/2, (y2-y1)/2 
+        
+        # Center offsets for 3D coordinates
+        # Bins pixel (0,0) of crop to (-width/2, +height/2) or similar
+        # Let's align with standard CV conventions: X right, Y down, Z forward
+        # If crop top-left is pixel (0,0), that corresponds to:
+        # X = -width_m / 2
+        # Y = -height_m / 2  (if Y is down)
         
         for i, kp in enumerate(kp_crop):
-            # Map 2D pixel to 3D physical (simple separate plane assumption)
-            # Origin at top-left of crop? No, let's stick to simple mapping
-            # Actually, standard way is mapping pixel u,v to physical X,Y
-            # We used u*sx before. Let's keep consistency with original logic
-            u, v = kp.pt
-            X = u * sx
-            Y = -v * sy
+            u, v = kp.pt # relative to crop
+            
+            # Simple planar mapping where Center is (0,0)
+            # u goes 0 -> crop_w. X goes -W/2 -> W/2
+            X = (u * sx) - (self.obj_width / 2.0)
+            
+            # v goes 0 -> crop_h. Y goes -H/2 -> H/2 (Y down)
+            Y = (v * sy) - (self.obj_height / 2.0)
+            
             plane_ref.append([X, Y, 0.0])
             
             # Keypoint global coords
@@ -355,6 +382,7 @@ class Full5ObjectTracker(Node):
 
         self.camera = ThreadedCamera(self.get_logger())
         self.frame_count = 0
+        self.fps_counter = FPSCounter(self.get_logger())
 
     def publish_tf(self, obj_name, rvec, tvec):
         t = TransformStamped()
@@ -391,6 +419,8 @@ class Full5ObjectTracker(Node):
                     continue
 
                 self.frame_count += 1
+                self.fps_counter.update()
+                
                 if UNDISTORT and self.dist is not None:
                      frame = cv2.undistort(frame, self.K, self.dist)
                 
