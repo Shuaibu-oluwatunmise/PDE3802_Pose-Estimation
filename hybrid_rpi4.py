@@ -118,9 +118,10 @@ class ThreadedCamera:
         self.sink = None
         
         Gst.init(None)
+        # Reduced Resolution for higher FPS (640x480 -> 480x360)
         gst_str = (
             "libcamerasrc ! "
-            "video/x-raw,width=640,height=480,format=NV12,framerate=30/1 ! "
+            "video/x-raw,width=480,height=360,format=NV12,framerate=30/1 ! "
             "videoconvert ! video/x-raw,format=BGR ! "
             "appsink name=sink emit-signals=true max-buffers=1 drop=true"
         )
@@ -463,8 +464,12 @@ class Full5ObjectTracker(Node):
         if not self.camera.start(): return
         self.get_logger().info("Setup Complete. Starting Loop...")
         
+        target_fps = 6.0
+        frame_time = 1.0 / target_fps
+        
         try:
             while rclpy.ok():
+                start_loop = time.time()
                 frame = self.camera.read()
                 if frame is None:
                     time.sleep(0.01)
@@ -472,7 +477,7 @@ class Full5ObjectTracker(Node):
 
                 self.frame_count += 1
                 self.fps_counter.update()
-                
+
                 if UNDISTORT and self.dist is not None:
                      frame = cv2.undistort(frame, self.K, self.dist)
                 
@@ -497,12 +502,14 @@ class Full5ObjectTracker(Node):
                 run_yolo = (self.frame_count % yolo_interval == 0)
                 
                 if run_yolo:
+                    # Filter classes to ONLY detecting the ones we need for feature tracking
                     results = self.yolo_model(frame, verbose=False)
                     self.last_detections = {}
                     self.last_confs = {}
                     for r in results:
                         for box in r.boxes:
                             name = self.yolo_model.names[int(box.cls[0])]
+                            
                             conf = float(box.conf[0])
                             if name in OBJECT_SPECS and conf > MIN_DETECTION_CONFIDENCE:
                                 self.last_detections[name] = box.xyxy[0].cpu().numpy().astype(int)
@@ -583,6 +590,8 @@ class Full5ObjectTracker(Node):
                                 self.draw_axes(display, name, rv, tv)
                                 t = tv.flatten()
                                 cv2.putText(display, f"{name}: {t[0]:.2f},{t[1]:.2f},{t[2]:.2f}", (10, y_off), 0, 0.6, specs["color"], 2)
+                        else:
+                            cv2.putText(display, f"{name}: Searching (ArUco)", (10, y_off), 0, 0.5, (100,100,100), 1)
                         
                     y_off += 20
 
@@ -596,6 +605,11 @@ class Full5ObjectTracker(Node):
                     for t in self.feature_trackers.values(): t.reset()
                 
                 rclpy.spin_once(self, timeout_sec=0)
+                
+                # Sleep to cap FPS
+                elapsed = time.time() - start_loop
+                if elapsed < frame_time:
+                    time.sleep(frame_time - elapsed)
 
         except KeyboardInterrupt:
             pass
