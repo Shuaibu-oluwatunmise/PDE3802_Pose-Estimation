@@ -202,6 +202,7 @@ class FeatureTracker:
         self.has_reference = False
         self.stable_bbox_buffer = []
         self.prev_rvec, self.prev_tvec = None, None
+        self.last_bbox = None
 
     def is_bbox_stable(self, bbox):
         self.stable_bbox_buffer.append(bbox)
@@ -230,27 +231,25 @@ class FeatureTracker:
             return False
 
         # Adjust KeyPoints to global coordinates and create 3D plane
-        # Mapping: We want the center of the bounding box to be (0,0,0) in 3D
         sx, sy = self.obj_width / (x2-x1), self.obj_height / (y2-y1)
         
         plane_ref, valid_kp, valid_des = [], [], []
         
-        # Center offsets for 3D coordinates
-        # Bins pixel (0,0) of crop to (-width/2, +height/2) or similar
-        # Let's align with standard CV conventions: X right, Y down, Z forward
-        # If crop top-left is pixel (0,0), that corresponds to:
-        # X = -width_m / 2
-        # Y = -height_m / 2  (if Y is down)
+        # Mapping: Center of bbox is (0,0,0).
+        # We need to preserve "Y Up" orientation (Standard in many robotics/ROS simple setups).
+        # Original code: Y = -v * sy (Pixel down -> Physical Up).
+        # New Center-based: Y = (-v * sy) + Y_offset.
+        # At v=0 (top), Y should be +Height/2.
+        # At v=h (bot), Y should be -Height/2.
         
         for i, kp in enumerate(kp_crop):
             u, v = kp.pt # relative to crop
             
-            # Simple planar mapping where Center is (0,0)
-            # u goes 0 -> crop_w. X goes -W/2 -> W/2
+            # X Right is positive (Same as pixel u)
             X = (u * sx) - (self.obj_width / 2.0)
             
-            # v goes 0 -> crop_h. Y goes -H/2 -> H/2 (Y down)
-            Y = (v * sy) - (self.obj_height / 2.0)
+            # Y Up is positive (Opposite to pixel v)
+            Y = (-v * sy) + (self.obj_height / 2.0)
             
             plane_ref.append([X, Y, 0.0])
             
@@ -263,11 +262,51 @@ class FeatureTracker:
         self.ref_des = np.array(valid_des)
         self.plane_ref = np.array(plane_ref, dtype=np.float32)
         self.has_reference = True
+        self.last_bbox = bbox
         logger.info(f"Reference set for {self.obj_name}: {len(valid_kp)} features")
         return True
 
+    def predict_next_bbox(self, frame_shape):
+        """Project the 3D plane back to image to estimate next bounding box"""
+        if self.prev_rvec is None or self.prev_tvec is None:
+            return self.last_bbox
+
+        # Define 3D corners of the object
+        w, h = self.obj_width, self.obj_height
+        corners_3d = np.float32([
+            [-w/2,  h/2, 0], # Top-Left
+            [ w/2,  h/2, 0], # Top-Right
+            [ w/2, -h/2, 0], # Bottom-Right
+            [-w/2, -h/2, 0]  # Bottom-Left
+        ])
+        
+        imgpts, _ = cv2.projectPoints(corners_3d, self.prev_rvec, self.prev_tvec, self.K, self.dist)
+        imgpts = imgpts.reshape(-1, 2)
+        
+        # Find binding rect
+        x_min, y_min = np.min(imgpts, axis=0)
+        x_max, y_max = np.max(imgpts, axis=0)
+        
+        h_img, w_img = frame_shape[:2]
+        x1 = max(0, int(x_min))
+        y1 = max(0, int(y_min))
+        x2 = min(w_img, int(x_max))
+        y2 = min(h_img, int(y_max))
+        
+        # Add some margin for movement
+        m = 20
+        x1, y1 = max(0, x1-m), max(0, y1-m)
+        x2, y2 = min(w_img, x2+m), min(h_img, y2+m)
+        
+        if x2 <= x1 or y2 <= y1:
+            return self.last_bbox
+            
+        return [x1, y1, x2, y2]
+
     def track_pose(self, frame, bbox):
         if not self.has_reference: return None, "No Ref"
+        
+        self.last_bbox = bbox # Update known position
         
         # ROI TRACKING OPTIMIZATION
         # Only search in the area of the detected bbox + margin
@@ -297,6 +336,8 @@ class FeatureTracker:
                 good_matches.append(m_match)
         
         if len(good_matches) < MIN_MATCH_COUNT:
+            # If we lost tracking, we might want to clear previous pose
+            # But let's keep it for one frame logic in main loop
             return None, f"Low Match {len(good_matches)}"
             
         obj_pts = []
@@ -353,6 +394,7 @@ class FeatureTracker:
         self.has_reference = False
         self.prev_rvec = None
         self.prev_tvec = None
+        self.last_bbox = None
 
 # ============================================================================
 # MAIN TRACKER
@@ -383,6 +425,8 @@ class Full5ObjectTracker(Node):
         self.camera = ThreadedCamera(self.get_logger())
         self.frame_count = 0
         self.fps_counter = FPSCounter(self.get_logger())
+        self.yolo_interval = 30 # Run YOLO every 30 frames
+        self.last_detections = {}
 
     def publish_tf(self, obj_name, rvec, tvec):
         t = TransformStamped()
@@ -426,16 +470,21 @@ class Full5ObjectTracker(Node):
                 
                 display = frame.copy()
                 
-                # YOLO (Run every frame, or skip? For now every frame but it's the bottleneck)
-                # TFLite/ONNX should make this fast enough (15-20fps on RPi4)
-                results = self.yolo_model(frame, verbose=False)
-                detections = {}
-                for r in results:
-                    for box in r.boxes:
-                        name = self.yolo_model.names[int(box.cls[0])]
-                        if name in OBJECT_SPECS and float(box.conf[0]) > MIN_DETECTION_CONFIDENCE:
-                            detections[name] = box.xyxy[0].cpu().numpy().astype(int)
-
+                # INTELLIGENT YOLO SCHEDULING
+                # Run YOLO if:
+                # 1. It is time (yolo_interval)
+                # 2. OR any active tracker has lost tracking? (Maybe too aggressive for now)
+                run_yolo = (self.frame_count % self.yolo_interval == 0)
+                
+                if run_yolo:
+                    results = self.yolo_model(frame, verbose=False)
+                    self.last_detections = {}
+                    for r in results:
+                        for box in r.boxes:
+                            name = self.yolo_model.names[int(box.cls[0])]
+                            if name in OBJECT_SPECS and float(box.conf[0]) > MIN_DETECTION_CONFIDENCE:
+                                self.last_detections[name] = box.xyxy[0].cpu().numpy().astype(int)
+                
                 # ArUco
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 corners, ids, _ = self.aruco_detector.detectMarkers(gray)
@@ -449,15 +498,23 @@ class Full5ObjectTracker(Node):
                 
                 # PROCESS OBJECTS
                 for name, specs in OBJECT_SPECS.items():
-                    bbox = detections.get(name)
+                    # Get bbox from YOLO (if ran) or Prediction
+                    bbox = self.last_detections.get(name)
                     
-                    # VISUALIZE BBOX
-                    if bbox is not None and DRAW_BBOX:
-                        cv2.rectangle(display, (bbox[0], bbox[1]), (bbox[2], bbox[3]), specs["color"], 2)
-
-                    # FEATURE TRACKING
                     if specs["method"] == "feature":
                         tracker = self.feature_trackers[name]
+                        
+                        # If we didn't run YOLO this frame, ask tracker to predict bbox from previous pose
+                        if not run_yolo and tracker.has_reference and tracker.prev_rvec is not None:
+                            pred_bbox = tracker.predict_next_bbox(frame.shape)
+                            if pred_bbox is not None:
+                                bbox = pred_bbox
+                        
+                        # VISUALIZE BBOX (Cyan if predicted, Green if detected)
+                        if bbox is not None and DRAW_BBOX:
+                            color = specs["color"] if run_yolo else (255, 255, 0) # Cyan for prediction
+                            cv2.rectangle(display, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+
                         if bbox is not None:
                             if not tracker.has_reference:
                                 if tracker.is_bbox_stable(bbox):
@@ -465,9 +522,6 @@ class Full5ObjectTracker(Node):
                                 else:
                                     cv2.putText(display, f"{name}: Stabilizing", (10, y_off), 0, 0.5, (0,255,255), 1)
                             else:
-                                # We have reference, track it using ROI from BBOX
-                                # If YOLO lost it, we could try tracking full frame or previous location?
-                                # For now, strict: needs YOLO detection to track (Hybrid approach)
                                 pose, status = tracker.track_pose(frame, bbox)
                                 if pose:
                                     self.publish_tf(name, pose['rvec'], pose['tvec'])
@@ -477,9 +531,9 @@ class Full5ObjectTracker(Node):
                                 else:
                                     cv2.putText(display, f"{name}: {status}", (10, y_off), 0, 0.5, (0,0,255), 1)
                         else:
-                             # YOLO didn't see it
+                             # YOLO didn't see it AND we couldn't predict it
                              if tracker.has_reference:
-                                 tracker.reset() # Reset if lost? Or wait? Let's reset for safety.
+                                 tracker.reset() 
                              cv2.putText(display, f"{name}: Searching...", (10, y_off), 0, 0.5, (100,100,100), 1)
                     
                     # ARUCO TRACKING
