@@ -2,3 +2,5 @@ ultralytics
 opencv-python
 numpy<2.0
 transforms3d
+onnx
+onnxruntime
