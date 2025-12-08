@@ -14,9 +14,9 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    # Get the directory of this package
-    # Note: If not in a ROS package, use absolute paths
-    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    # Get the package root directory (one level up from launch/)
+    launch_dir = os.path.dirname(os.path.abspath(__file__))
+    pkg_dir = os.path.dirname(launch_dir)
     
     # Path to RViz config
     rviz_config = os.path.join(pkg_dir, 'config', 'pose_estimation.rviz')
