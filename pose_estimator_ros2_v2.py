@@ -31,7 +31,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 import tf_transformations
 
 from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
@@ -114,7 +114,9 @@ class CombinedPoseEstimatorROS2(Node):
         
         # TF Broadcaster
         self.tf_broadcaster = TransformBroadcaster(self)
+        self.tf_static_broadcaster = StaticTransformBroadcaster(self)
         self.camera_frame = "camera_link_G4"
+        self.publish_static_map_link()
         
         self.get_logger().info("="*60)
         self.get_logger().info("ROS2 Pose Estimator Node Started")
@@ -231,6 +233,21 @@ class CombinedPoseEstimatorROS2(Node):
         self.orb = cv2.ORB_create(nfeatures=2000, fastThreshold=12)
         self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
         self.get_logger().info(f"✓ ORB initialized (2000 features)")
+
+    def publish_static_map_link(self):
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "map"
+        t.child_frame_id = self.camera_frame
+        t.transform.translation.x = 0.0
+        t.transform.translation.y = 0.0
+        t.transform.translation.z = 0.0
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = 0.0
+        t.transform.rotation.z = 0.0
+        t.transform.rotation.w = 1.0
+        self.tf_static_broadcaster.sendTransform(t)
+        self.get_logger().info(f"Published static transform: map -> {self.camera_frame}")
 
     def publish_tf(self, obj_name, rvec, tvec):
         """Publish TF transform for an object"""

@@ -24,7 +24,7 @@ from ultralytics import YOLO
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 import tf_transformations
 
 from Camera_Calibration.camera_calibration.camera_params import CAMERA_MATRIX, DIST_COEFFS
@@ -335,6 +335,8 @@ class Full5ObjectTracker(Node):
     def __init__(self):
         super().__init__('full_5_object_tracker_node')
         self.tf_broadcaster = TransformBroadcaster(self)
+        self.tf_static_broadcaster = StaticTransformBroadcaster(self)
+        self.publish_static_map_link()
         self.pipeline = None
         self.sink = None
         
@@ -369,6 +371,21 @@ class Full5ObjectTracker(Node):
                 self.get_logger().info(f"✓ Feature tracker created for {obj_name}")
         
         self.frame_count = 0
+
+    def publish_static_map_link(self):
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "map"
+        t.child_frame_id = CAMERA_FRAME
+        t.transform.translation.x = 0.0
+        t.transform.translation.y = 0.0
+        t.transform.translation.z = 0.0
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = 0.0
+        t.transform.rotation.z = 0.0
+        t.transform.rotation.w = 1.0
+        self.tf_static_broadcaster.sendTransform(t)
+        self.get_logger().info(f"Published static transform: map -> {CAMERA_FRAME}")
     
     def publish_tf(self, obj_name, rvec, tvec):
         t = TransformStamped()
