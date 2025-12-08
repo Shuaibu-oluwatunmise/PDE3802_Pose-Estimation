@@ -8,7 +8,7 @@ import cv2
 from ultralytics import YOLO
 
 # Configuration
-MODEL_PATH = 'runs/detect/yolov8n_detect_V2/weights/best.pt'
+MODEL_PATH = 'runs/detect/yolov5n_detect_V1/weights/best.pt'
 CONF_THRESHOLD = 0.5
 SOURCE = 1  # 0 for webcam, or path to video file
 
