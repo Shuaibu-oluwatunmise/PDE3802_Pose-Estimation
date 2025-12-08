@@ -22,7 +22,7 @@ def generate_launch_description():
     rviz_config = os.path.join(pkg_dir, 'config', 'pose_estimation.rviz')
     
     # Path to the Python script
-    script_path = os.path.join(pkg_dir, 'compromise_model3.py')
+    script_path = os.path.join(pkg_dir, 'main.py')
     
     return LaunchDescription([
         # Launch the pose estimation node
