@@ -142,7 +142,7 @@ cd ~/pose_estimation_ws_t1/src/PDE3802_Pose-Estimation
 
 ### Step 4: Run Main Pose Estimation System
 ```bash
-python3 pose_estimator_ros2_v2.py
+python3 main.py
 ```
 
 ---
