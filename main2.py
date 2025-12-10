@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Compromise 5-Object 6DOF Pose Tracker (Model V3: YOLOv8n) - WITH ADAPTIVE FRAME SKIPPING
+Compromise 5-Object 6DOF Pose Tracker (Model V3: YOLOv8n)
+Based on compromise.py but with:
+1. Model Path: runs/detect/yolov8n_detect_V3/weights/best.
+2. Object Specs: 'cardbox' (0.24m x 0.13m) replaces 'circuit_board'.
 """
 
 import os
@@ -44,7 +47,7 @@ ARUCO_MARKER_SIZES = {"phone": 0.0365, "estop": 0.0365}
 
 OBJECT_SPECS = {
     "card_game": {"width_m": 0.093, "height_m": 0.115, "color": (0, 255, 0), "method": "feature"},
-    "cardbox": {"width_m": 0.24, "height_m": 0.13, "color": (255, 0, 0), "method": "feature"},
+    "cardbox": {"width_m": 0.24, "height_m": 0.13, "color": (255, 0, 0), "method": "feature"}, # Replaces circuit_board
     "notebook": {"width_m": 0.147, "height_m": 0.209, "color": (0, 0, 255), "method": "feature"},
     "phone": {"color": (255, 255, 0), "method": "aruco", "aruco_id": ARUCO_IDS["phone"], "marker_size_m": ARUCO_MARKER_SIZES["phone"]},
     "estop": {"color": (255, 0, 255), "method": "aruco", "aruco_id": ARUCO_IDS["estop"], "marker_size_m": ARUCO_MARKER_SIZES["estop"]},
@@ -58,11 +61,6 @@ MIN_MATCH_COUNT = 10
 MIN_PNP_POINTS = 6
 MIN_PNP_INLIERS = 6
 REPROJ_ERROR_THRESH = 4.0
-
-# ADAPTIVE FRAME SKIPPING CONFIGURATION
-BASE_SKIP_FRAMES = 3        # Process every 3rd frame when stable
-FAST_SKIP_FRAMES = 1        # Process every frame when motion detected
-MOTION_THRESHOLD = 30       # Pixel movement to consider as "motion"
 
 DRAW_BBOX = True
 DRAW_INLIERS = True
@@ -94,22 +92,12 @@ def bbox_iou(box1, box2):
     union = area1 + area2 - intersection
     return intersection / union if union > 0 else 0.0
 
-def bbox_center(bbox):
-    """Get center point of bbox"""
-    return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
-
-def bbox_distance(bbox1, bbox2):
-    """Calculate distance between bbox centers"""
-    c1 = bbox_center(bbox1)
-    c2 = bbox_center(bbox2)
-    return np.sqrt((c1[0] - c2[0])**2 + (c1[1] - c2[1])**2)
-
 def is_blurry(image, threshold=100):
     val = cv2.Laplacian(image, cv2.CV_64F).var()
     return val < threshold
 
 # ============================================================================
-# THREADED CAMERA
+# THREADED CAMERA (High Res)
 # ============================================================================
 class ThreadedCamera:
     """Acquires frames in a separate thread to prevent blocking main loop"""
@@ -168,7 +156,7 @@ class ThreadedCamera:
             self.pipeline.set_state(Gst.State.NULL)
 
 # ============================================================================
-# FEATURE TRACKER CLASS
+# FEATURE TRACKER CLASS (Hybrid Logic)
 # ============================================================================
 class FeatureTracker:
     def __init__(self, obj_name, obj_specs, orb, bf_matcher, K, dist):
@@ -185,9 +173,6 @@ class FeatureTracker:
         self.has_reference = False
         self.stable_bbox_buffer = []
         self.prev_rvec, self.prev_tvec = None, None
-        
-        # For motion detection
-        self.last_bbox = None
 
     def is_bbox_stable(self, bbox):
         self.stable_bbox_buffer.append(bbox)
@@ -195,16 +180,6 @@ class FeatureTracker:
         if len(self.stable_bbox_buffer) < STABLE_FRAMES_NEEDED: return False
         first = self.stable_bbox_buffer[0]
         return all(bbox_iou(first, b) > 0.85 for b in self.stable_bbox_buffer[1:])
-
-    def has_moved(self, bbox):
-        """Check if object has moved significantly"""
-        if self.last_bbox is None:
-            self.last_bbox = bbox
-            return False
-        
-        distance = bbox_distance(self.last_bbox, bbox)
-        self.last_bbox = bbox
-        return distance > MOTION_THRESHOLD
 
     def create_reference(self, frame, bbox, logger):
         x1, y1, x2, y2 = bbox
@@ -247,6 +222,7 @@ class FeatureTracker:
     def track_pose(self, frame, bbox):
         if not self.has_reference: return None, "No Ref"
         
+        # Crop to current bbox + large margin for tracking
         h_img, w_img = frame.shape[:2]
         x1, y1, x2, y2 = bbox
         m = 50 
@@ -327,7 +303,6 @@ class FeatureTracker:
         self.prev_rvec = None
         self.prev_tvec = None
         self.stable_bbox_buffer.clear()
-        self.last_bbox = None
 
 # ============================================================================
 # MAIN TRACKER
@@ -360,11 +335,6 @@ class Full5ObjectTracker(Node):
         self.fps_start = time.time()
         self.frame_count = 0
         self.fps = 0.0
-        
-        # Adaptive frame skipping state
-        self.yolo_frame_counter = 0
-        self.cached_yolo_detections = {}
-        self.cached_yolo_confs = {}
 
     def publish_static_map_link(self):
         t = TransformStamped()
@@ -404,19 +374,9 @@ class Full5ObjectTracker(Node):
         cv2.line(display, tuple(pts[0]), tuple(pts[2]), (0,255,0), 3)
         cv2.line(display, tuple(pts[0]), tuple(pts[3]), (255,0,0), 3)
 
-    def detect_motion(self):
-        """Check if any tracked object has moved significantly"""
-        for tracker in self.feature_trackers.values():
-            if tracker.has_reference and tracker.last_bbox is not None:
-                # If any object has moved recently, we have motion
-                # (has_moved is called when processing, so we just check if tracking is active)
-                continue
-        return False
-
     def run(self):
         if not self.camera.start(): return
-        self.get_logger().info("Compromise Tracker Started (WITH ADAPTIVE FRAME SKIPPING)")
-        self.get_logger().info(f"Base skip: every {BASE_SKIP_FRAMES} frames | Fast skip: every {FAST_SKIP_FRAMES} frame")
+        self.get_logger().info("Compromise Tracker Stated (Sync YOLO V3, Conf 0.55)")
         
         try:
             while rclpy.ok():
@@ -433,7 +393,7 @@ class Full5ObjectTracker(Node):
                     self.frame_count = 0
                     self.fps_start = time.time()
                 
-                # ArUco (Always run - it's fast)
+                # ArUco (Fast, independent)
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 corners, ids, _ = self.aruco_detector.detectMarkers(gray)
                 aruco_map = {}
@@ -442,44 +402,25 @@ class Full5ObjectTracker(Node):
                     for i, id_val in enumerate(ids):
                         aruco_map[id_val] = corners[i][0]
 
-                # ADAPTIVE FRAME SKIPPING FOR YOLO
-                self.yolo_frame_counter += 1
+                # YOLO (Synchronous, Full Frame)
+                # This guarantees "always scan full frame"
+                results = self.yolo_model(frame, verbose=False)
                 
-                # Determine skip rate based on motion
-                any_motion = self.detect_motion()
-                skip_interval = FAST_SKIP_FRAMES if any_motion else BASE_SKIP_FRAMES
-                
-                # Run YOLO only on selected frames
-                if self.yolo_frame_counter % skip_interval == 0:
-                    # Fresh YOLO detection
-                    results = self.yolo_model(frame, verbose=False)
-                    
-                    yolo_detections = {}
-                    yolo_confs = {}
-                    for r in results:
-                        for box in r.boxes:
-                            name = self.yolo_model.names[int(box.cls[0])]
-                            conf = float(box.conf[0])
-                            if name in OBJECT_SPECS and conf >= MIN_DETECTION_CONFIDENCE:
-                                if name not in yolo_confs or conf > yolo_confs[name]:
-                                    yolo_detections[name] = box.xyxy[0].cpu().numpy().astype(int)
-                                    yolo_confs[name] = conf
-                    
-                    # Cache for next frames
-                    self.cached_yolo_detections = yolo_detections
-                    self.cached_yolo_confs = yolo_confs
-                else:
-                    # Use cached detections
-                    yolo_detections = self.cached_yolo_detections
-                    yolo_confs = self.cached_yolo_confs
+                yolo_detections = {}
+                yolo_confs = {}
+                for r in results:
+                    for box in r.boxes:
+                        name = self.yolo_model.names[int(box.cls[0])]
+                        conf = float(box.conf[0])
+                        if name in OBJECT_SPECS and conf >= MIN_DETECTION_CONFIDENCE:
+                            # Prioritize highest confidence if duplicate
+                            if name not in yolo_confs or conf > yolo_confs[name]:
+                                yolo_detections[name] = box.xyxy[0].cpu().numpy().astype(int)
+                                yolo_confs[name] = conf
 
                 display = frame.copy()
                 y_off = 30
                 tracking_count = 0
-                
-                # Display skip status
-                skip_status = f"YOLO: {'FRESH' if self.yolo_frame_counter % skip_interval == 0 else 'CACHED'} (skip={skip_interval})"
-                cv2.putText(display, skip_status, (10, display.shape[0]-40), 0, 0.5, (255, 255, 0), 1)
                 
                 # PROCESS OBJECTS
                 for name, specs in OBJECT_SPECS.items():
@@ -498,6 +439,7 @@ class Full5ObjectTracker(Node):
                                 cv2.putText(display, f"{name}: [{t[0]:.2f},{t[1]:.2f},{t[2]:.2f}]m", (10, y_off), 0, 0.5, specs["color"], 2)
                                 tracking_count += 1
                         
+                        # Just draw YOLO box if seen
                         if name in yolo_detections:
                             b = yolo_detections[name]
                             cv2.rectangle(display, (b[0], b[1]), (b[2], b[3]), specs["color"], 2)
@@ -505,12 +447,12 @@ class Full5ObjectTracker(Node):
                     # --- FEATURE METHOD ---
                     elif specs["method"] == "feature":
                         tracker = self.feature_trackers[name]
+                        
+                        # We ALWAYS use fresh YOLO if available because "scan full frame"
                         bbox = yolo_detections.get(name)
                         
                         if bbox is not None:
-                            # Check for motion
-                            tracker.has_moved(bbox)
-                            
+                            # YOLO Saw it
                             cv2.rectangle(display, (bbox[0], bbox[1]), (bbox[2], bbox[3]), specs["color"], 2)
                             cv2.putText(display, f"{yolo_confs[name]:.2f}", (bbox[0], bbox[1]-5), 0, 0.5, specs["color"], 1)
                             
@@ -530,13 +472,16 @@ class Full5ObjectTracker(Node):
                                 else:
                                     cv2.putText(display, f"{name}: {status}", (10, y_off), 0, 0.5, (0,0,255), 1)
                         else:
+                            # YOLO Missed it -> Lost
+                            # We don't try to predict blindly if the user wants "always scan full frame" 
+                            # implying trust in detector.
                             cv2.putText(display, f"{name}: Search", (10, y_off), 0, 0.5, (100,100,100), 1)
 
                     y_off += 20
                 
                 cv2.putText(display, f"FPS: {self.fps:.1f}", (display.shape[1]-120, 30), 0, 0.7, (0, 255, 0), 2)
                 cv2.putText(display, f"Track: {tracking_count}/5", (10, 470), 0, 0.7, (0,255,0), 2)
-                cv2.imshow("Compromise Tracker V3 + Adaptive Skip", display)
+                cv2.imshow("Compromise Tracker V3", display)
                 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'): break
