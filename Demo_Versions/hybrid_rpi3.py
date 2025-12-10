@@ -44,7 +44,7 @@ ARUCO_IDS = {
 
 ARUCO_MARKER_SIZES = {
     "phone": 0.0365,   # 36.5mm in meters
-    "estop": 0.0365,   # 36.5mm in meters
+    "estop": 0.030,   # 36.5mm in meters
 }
 
 # Object Specifications
