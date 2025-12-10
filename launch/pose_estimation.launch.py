@@ -2,7 +2,7 @@
 """
 Launch file for Pose Estimation with RViz visualization
 Launches:
-- compromise_model3.py (pose estimation node) - HIGH PRIORITY
+- compromise_model3.py (pose estimation node)
 - RViz2 with custom config - DELAYED START, LOW PRIORITY
 """
 
@@ -25,10 +25,10 @@ def generate_launch_description():
     script_path = os.path.join(pkg_dir, 'main2.py')
     
     return LaunchDescription([
-        # Launch the pose estimation node with HIGH PRIORITY
+        # Launch the pose estimation node (removed nice - requires sudo)
         ExecuteProcess(
-            cmd=['nice', '-n', '-10', 'python3', script_path],
-            output='log',  # Changed from 'screen' to reduce overhead
+            cmd=['python3', script_path],
+            output='log',  # Reduced overhead
             name='pose_estimation_node'
         ),
         
@@ -41,8 +41,8 @@ def generate_launch_description():
                     executable='rviz2',
                     name='rviz2',
                     arguments=['-d', rviz_config],
-                    output='log',  # Changed from 'screen' to reduce overhead
-                    prefix=['nice', '-n', '10']  # Low priority
+                    output='log',  # Reduced overhead
+                    prefix='nice -n 10'  # Correct syntax: string, not list
                 )
             ]
         )
