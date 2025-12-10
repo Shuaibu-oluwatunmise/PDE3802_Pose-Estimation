@@ -40,7 +40,7 @@ elif os.path.exists('runs/detect/yolov8n_detect_V3/weights/best.onnx'):
 
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 ARUCO_IDS = {"phone": 0, "estop": 1}
-ARUCO_MARKER_SIZES = {"phone": 0.0365, "estop": 0.0365}
+ARUCO_MARKER_SIZES = {"phone": 0.0365, "estop": 0.030}
 
 OBJECT_SPECS = {
     "card_game": {"width_m": 0.093, "height_m": 0.115, "color": (0, 255, 0), "method": "feature"},

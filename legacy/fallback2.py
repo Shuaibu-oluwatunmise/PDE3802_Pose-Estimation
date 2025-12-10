@@ -55,7 +55,7 @@ elif os.path.exists('runs/detect/yolov8n_detect_V2/weights/best.onnx'):
 # ArUco Configuration
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 ARUCO_IDS = {"phone": 0, "estop": 1}
-ARUCO_MARKER_SIZES = {"phone": 0.0365, "estop": 0.0365}
+ARUCO_MARKER_SIZES = {"phone": 0.0365, "estop": 0.030}
 
 # Object Specifications
 OBJECT_SPECS = {
