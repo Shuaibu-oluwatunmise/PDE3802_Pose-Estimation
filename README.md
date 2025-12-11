@@ -36,6 +36,7 @@ Real-time 6DOF pose estimation system for multiple objects using Raspberry Pi ca
 |----------|-------------|
 | [Dataset](https://livemdxac-my.sharepoint.com/:f:/r/personal/ms3433_live_mdx_ac_uk/Documents/Datasets_Pose_Estimation?csf=1&web=1&e=2ZiRal) | Training/validation/test datasets (V1, V2, V3) - 22,893 images |
 | [Presentation](Presentation/Gp2_Pose_Estimation_Presentation%20(Asse2).pptx) | Project presentation slides |
+| [View Commit History](https://github.com/Shuaibu-oluwatunmise/PDE3802_Pose-Estimation/commits/main) |
 
 ---
 
@@ -802,7 +803,7 @@ Testing, Documentation, RViz configuration
 
 **Course:** PDE3802 - AI in Robotics  
 **Institution:** Middlesex University London  
-**Date:** December 2024
+**Date:** December 2025
 
 [View Commit History](https://github.com/Shuaibu-oluwatunmise/PDE3802_Pose-Estimation/commits/main)
 
