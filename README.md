@@ -9,7 +9,7 @@ Real-time 6DOF pose estimation system for multiple objects using Raspberry Pi ca
 
 ---
 
-## Table of Contents
+## 📋 Table of Contents
 
 - [Quick Links](#quick-links)
 - [System Overview](#system-overview)
@@ -30,7 +30,7 @@ Real-time 6DOF pose estimation system for multiple objects using Raspberry Pi ca
 
 ---
 
-## Quick Links
+## 🔗 Quick Links
 
 | Resource | Description |
 |----------|-------------|
@@ -39,7 +39,7 @@ Real-time 6DOF pose estimation system for multiple objects using Raspberry Pi ca
 
 ---
 
-## System Overview
+## 🎯 System Overview
 
 A real-time embedded vision system achieving 6DOF pose estimation for 5 objects simultaneously on Raspberry Pi 4. The system combines dual tracking methods (ArUco markers and markerless feature-based) with intelligent optimization to achieve practical performance on CPU-only hardware.
 
@@ -74,7 +74,7 @@ A real-time embedded vision system achieving 6DOF pose estimation for 5 objects 
 
 ---
 
-## Key Features
+## ✨ Key Features
 
 - **Dual-method pose estimation** - Combines ArUco markers (robust) with markerless feature-based tracking (flexible)
 - **Adaptive frame skipping** - Intelligent YOLO caching: processes every 3rd frame when stable, every frame when motion detected
@@ -88,7 +88,7 @@ A real-time embedded vision system achieving 6DOF pose estimation for 5 objects 
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 Get the system running in under 10 minutes. Choose your setup method:
 
@@ -222,7 +222,7 @@ Then follow the **Manual RViz Setup** steps from Method 1 (Option B) above.
 
 ---
 
-## Performance Metrics
+## 📊 Performance Metrics
 
 ### System Performance
 
@@ -282,7 +282,7 @@ Then follow the **Manual RViz Setup** steps from Method 1 (Option B) above.
 
 ---
 
-## Development Journey
+## 🔄 Development Journey
 
 The project evolved through three distinct approaches before arriving at the final system, each providing valuable insights into pose estimation challenges on embedded hardware.
 
@@ -362,7 +362,7 @@ By skipping the 2D homography transformation and going straight from 3D object p
 
 ---
 
-## Prerequisites
+## 🔧 Prerequisites
 
 ### Hardware Requirements
 
@@ -431,7 +431,7 @@ Higher frame rates require hardware acceleration (Coral TPU, Jetson Nano) or arc
 
 ---
 
-## Tracked Objects
+## 🎯 Tracked Objects
 
 The system tracks 5 objects simultaneously using two different pose estimation methods. Physical dimensions are critical for accurate 3D pose reconstruction.
 
@@ -476,18 +476,18 @@ Objects with insufficient texture will be flagged before committing to full data
 
 ### System Performance
 
-![System Tracking - Multiple Objects](picture_results/detection_and pose_estimation_ cardgame_notebook.png)
+![System Tracking - Multiple Objects](picture_results/detection_and_pose_estimation_cardgame_notebook.png)
 *Card game and notebook tracked simultaneously with 6DOF pose estimation and coordinate axes visualization.*
 
-![RViz Visualization - TF Frames](picture_results/detection_and pose_estimation_and_rviz_ cardgame_estop.png)
+![RViz Visualization - TF Frames](picture_results/detection_and_pose_estimation_and_rviz_cardgame_estop.png)
 *Camera feed (left) and RViz TF frame display (right) showing real-time pose broadcasting for card game and e-stop button.*
 
-![Multi-Object Tracking](picture_results/detection_and pose_estimation_ cardgame_estop.png)
+![Multi-Object Tracking](picture_results/detection_and_pose_estimation_cardgame_estop.png)
 *E-stop button (ArUco) and card game (markerless) tracked together, demonstrating dual-method system capability.*
 
 ---
 
-## Technical Approach
+## 🔬 Technical Approach
 
 The system combines YOLO-based object detection with two complementary pose estimation methods, enabling robust tracking across different object types.
 
@@ -520,22 +520,6 @@ The system combines YOLO-based object detection with two complementary pose esti
 - Extremely robust and reliable
 - Works on any object (no texture requirements)
 - High accuracy with minimal computation
-
-**Implementation:**
-```python
-marker_size = 0.0365  # meters (phone)
-object_points = np.array([
-    [-marker_size/2,  marker_size/2, 0],
-    [ marker_size/2,  marker_size/2, 0],
-    [ marker_size/2, -marker_size/2, 0],
-    [-marker_size/2, -marker_size/2, 0]
-])
-success, rvec, tvec = cv2.solvePnP(
-    object_points, marker_corners, 
-    camera_matrix, dist_coeffs, 
-    flags=cv2.SOLVEPNP_IPPE_SQUARE
-)
-```
 
 ---
 
@@ -577,21 +561,7 @@ Each reference feature now has:
 - 3D object coordinates (X, Y, 0) for pose estimation
 
 **Temporal Smoothing:**
-```python
-# Use previous pose as initial guess
-success, rvec, tvec, inliers = cv2.solvePnPRansac(
-    object_points_3d, 
-    image_points_2d,
-    camera_matrix, 
-    dist_coeffs,
-    useExtrinsicGuess=True,      # Enable initial guess
-    rvec=previous_rvec,           # Previous rotation
-    tvec=previous_tvec,           # Previous translation
-    iterationsCount=50,
-    reprojectionError=8.0,
-    confidence=0.99
-)
-```
+Previous pose used as initial guess for solvePnP, reducing convergence time and jitter.
 
 **Advantages:**
 - Eliminates intermediate homography transformation (reduces geometric errors)
@@ -649,7 +619,7 @@ All transforms published to `/tf` topic for RViz visualization and downstream ro
 
 ---
 
-## Optimization Techniques
+## ⚡ Optimization Techniques
 
 Achieving real-time performance on Raspberry Pi 4's CPU required aggressive optimization. The system implements multiple strategies to maximize frame rate without sacrificing tracking accuracy.
 
@@ -700,19 +670,7 @@ Minimal accuracy loss - objects detected slightly later when suddenly appearing,
 Feature matching can produce frame-to-frame variations causing pose jitter, even when object is stationary.
 
 **The Solution:**
-Use previous pose as initial guess for solvePnP:
-
-```python
-success, rvec, tvec, inliers = cv2.solvePnPRansac(
-    object_points, image_points,
-    camera_matrix, dist_coeffs,
-    useExtrinsicGuess=True,      # Enable previous pose
-    rvec=previous_rvec,          # Last known rotation
-    tvec=previous_tvec,          # Last known translation
-    iterationsCount=50,
-    reprojectionError=8.0
-)
-```
+Use previous pose as initial guess for solvePnP, reducing convergence time and biasing toward previous solution for smoother tracking.
 
 **Benefits:**
 - Converges faster (fewer RANSAC iterations needed)
@@ -722,86 +680,15 @@ success, rvec, tvec, inliers = cv2.solvePnPRansac(
 
 ---
 
-### ONNX Model Export
+### Additional Optimizations
 
-**Optional optimization for further speedup:**
+**ONNX Model Export:** 10-15% faster inference on Raspberry Pi CPU. System automatically uses ONNX if available, falls back to PyTorch.
 
-```bash
-# Export YOLO model to ONNX format
-yolo export model=runs/detect/yolov8n_detect_V3/weights/best.pt format=onnx
+**Reduced Feature Count:** Extract 2000 ORB features (sufficient for textured objects), require only 6+ inliers for pose acceptance.
 
-# System automatically uses ONNX if available
-# Falls back to PyTorch (.pt) if ONNX not found
-```
+**GStreamer Pipeline:** `max-buffers=1` and `drop=true` prevent frame queue buildup, avoid lag.
 
-**Performance gain:** 10-15% faster inference on Raspberry Pi CPU
-
-**Trade-off:** Slightly larger model file size, but negligible impact on embedded storage
-
----
-
-### Reduced Feature Count
-
-**Configuration:**
-```python
-ORB_FEATURES = 2000          # Features to extract per frame
-MIN_FEATURES = 15            # Minimum for reference creation
-MIN_MATCH_COUNT = 10         # Minimum matches for pose estimation
-MIN_PNP_POINTS = 6           # Minimum points for solvePnP
-MIN_PNP_INLIERS = 6          # Minimum inliers after RANSAC
-```
-
-**Strategy:**
-- Extract 2000 ORB features (sufficient for most textured objects)
-- Require only 15+ features for reference (avoids over-constraining)
-- Accept poses with 6+ inliers (balances accuracy and robustness)
-
-**Impact:**
-Faster feature extraction without sacrificing pose quality on well-textured objects.
-
----
-
-### GStreamer Pipeline Optimization
-
-**Camera configuration:**
-```python
-gst_str = (
-    "libcamerasrc ! "
-    "video/x-raw,width=640,height=480,format=NV12,framerate=30/1 ! "
-    "videoconvert ! video/x-raw,format=BGR ! "
-    "appsink emit-signals=true max-buffers=1 drop=true"
-)
-```
-
-**Key settings:**
-- `max-buffers=1`: Prevents frame queue buildup
-- `drop=true`: Drops frames if processing is slow (avoids lag)
-- 640×480 resolution: Balance between detection accuracy and processing speed
-
----
-
-### Threaded Camera Acquisition
-
-**Implementation:**
-Camera runs in separate thread, continuously updating latest frame:
-
-```python
-class ThreadedCamera:
-    def _on_new_sample(self, sink):
-        # Runs in background thread
-        with self.lock:
-            self.frame = new_frame.copy()
-    
-    def read(self):
-        # Main thread reads latest frame
-        with self.lock:
-            return self.frame.copy()
-```
-
-**Benefits:**
-- Camera acquisition doesn't block main processing loop
-- Always have latest frame available (no frame skipping due to processing delay)
-- Smooth frame capture even when YOLO inference is running
+**Threaded Camera:** Background acquisition prevents blocking main processing loop, always have latest frame available.
 
 ---
 
@@ -821,7 +708,7 @@ class ThreadedCamera:
 
 ---
 
-## Repository Structure
+## 📁 Repository Structure
 
 ```
 PDE3802_Pose-Estimation/
@@ -866,7 +753,7 @@ PDE3802_Pose-Estimation/
 
 ---
 
-## System Capabilities & Constraints
+## 🎯 System Capabilities & Constraints
 
 ### Achieved Capabilities
 
@@ -902,26 +789,26 @@ PDE3802_Pose-Estimation/
 
 ---
 
-## Team & Authors
+## 👥 Team & Authors
 
 **Oluwatunmise Raphael Shuaibu** - M00960413  
 Lead developer, system architecture, optimization
 
 **Myu Wai Shin** - M00964135  
-Dataset creation, testing, documentation
+Dataset creation, Model training, ROS2 integration
 
 **Arash Bazrafshan** - M00766882  
-ROS2 integration, RViz configuration
+Testing, Documentation, RViz configuration
 
 **Course:** PDE3802 - AI in Robotics  
 **Institution:** Middlesex University London  
 **Date:** December 2024
 
-**Note:** This project involved collaborative development with overlapping contributions across all areas. Individual commits reflect work distribution but all members contributed to research, implementation, and testing.
+[View Commit History](https://github.com/Shuaibu-oluwatunmise/PDE3802_Pose-Estimation/commits/main)
 
 ---
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
 Special thanks to:
 - Course instructors and teaching staff at Middlesex University London for guidance and support
