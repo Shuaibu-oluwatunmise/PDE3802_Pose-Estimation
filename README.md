@@ -806,6 +806,10 @@ Testing, Documentation, RViz configuration
 **Institution:** Middlesex University London  
 **Date:** December 2025
 
+
+**Note:**
+ This project involved collaborative development with overlapping contributions across all areas. Individual commits reflect work distribution but all members contributed to research, implementation, and testing.
+
 [View Commit History](https://github.com/Shuaibu-oluwatunmise/PDE3802_Pose-Estimation/commits/main)
 
 ---
